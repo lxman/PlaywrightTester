@@ -10,6 +10,14 @@ namespace PlaywrightTester;
 public class PlaywrightTools(ToolService toolService, ChromeService chromeService, FirefoxService firefoxService, WebKitService webKitService)
 {
     private readonly Dictionary<string, IPage> _activeSessions = new();
+    private readonly Dictionary<string, SessionData> _sessionData = new();
+
+    public class SessionData
+    {
+        public List<ConsoleLogEntry> ConsoleLogs { get; set; } = [];
+        public List<NetworkLogEntry> NetworkLogs { get; set; } = [];
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    }
 
     [McpServerTool]
     [Description("Launch a browser and create a new session. Returns session ID.")]
@@ -24,23 +32,36 @@ public class PlaywrightTools(ToolService toolService, ChromeService chromeServic
             IBrowserContext context;
             IPage page;
 
+            // Clear any existing session data for this sessionId
+            if (_sessionData.ContainsKey(sessionId))
+            {
+                _sessionData[sessionId].ConsoleLogs.Clear();
+                _sessionData[sessionId].NetworkLogs.Clear();
+            }
+            else
+            {
+                _sessionData[sessionId] = new SessionData();
+            }
+
             switch (browserType.ToLower())
             {
                 case "chrome":
                     browser = await chromeService.LaunchBrowserAsync(headless);
                     context = await chromeService.CreateContextAsync();
                     page = await chromeService.CreatePageAsync();
-                    await chromeService.SetupDebugging(page);
+                    await SetupSessionSpecificDebugging(page, sessionId);
                     break;
                 case "firefox":
                     browser = await firefoxService.LaunchBrowserAsync(headless);
                     context = await firefoxService.CreateContextAsync();
                     page = await firefoxService.CreatePageAsync();
+                    await SetupSessionSpecificDebugging(page, sessionId);
                     break;
                 case "webkit":
                     browser = await webKitService.LaunchBrowserAsync(headless);
                     context = await webKitService.CreateContextAsync();
                     page = await webKitService.CreatePageAsync();
+                    await SetupSessionSpecificDebugging(page, sessionId);
                     break;
                 default:
                     throw new ArgumentException($"Unsupported browser type: {browserType}");
@@ -61,6 +82,77 @@ public class PlaywrightTools(ToolService toolService, ChromeService chromeServic
             return $"Failed to launch browser: {ex.Message}";
         }
     }
+
+    private async Task SetupSessionSpecificDebugging(IPage page, string sessionId)
+    {
+        // Ensure session data exists
+        if (!_sessionData.ContainsKey(sessionId))
+            _sessionData[sessionId] = new SessionData();
+
+        var sessionData = _sessionData[sessionId];
+
+        // Monitor console messages and store them in session-specific logs
+        page.Console += (_, e) =>
+        {
+            var logEntry = new ConsoleLogEntry
+            {
+                Type = e.Type.ToString().ToLower(),
+                Text = e.Text,
+                Timestamp = DateTime.UtcNow
+            };
+            sessionData.ConsoleLogs.Add(logEntry);
+        };
+
+        // Monitor network requests and store them in session-specific logs
+        page.Request += (_, e) =>
+        {
+            var networkEntry = new NetworkLogEntry
+            {
+                Type = "request",
+                Method = e.Method,
+                Url = e.Url,
+                Timestamp = DateTime.UtcNow
+            };
+            sessionData.NetworkLogs.Add(networkEntry);
+        };
+
+        page.Response += (_, e) =>
+        {
+            var networkEntry = new NetworkLogEntry
+            {
+                Type = "response",
+                Method = e.Request.Method,
+                Url = e.Url,
+                Status = e.Status,
+                Timestamp = DateTime.UtcNow
+            };
+            sessionData.NetworkLogs.Add(networkEntry);
+        };
+
+        // Setup enhanced debugging script with session isolation
+        await page.AddInitScriptAsync($@"
+            (() => {{
+                const sessionId = '{sessionId}';
+                const sessionKey = 'session_' + sessionId;
+                
+                // Network monitoring with session isolation
+                if (!window[sessionKey + '_networkLogs']) {{
+                    window[sessionKey + '_networkLogs'] = [];
+                    const originalFetch = window.fetch;
+                    window.fetch = function(...args) {{
+                        const url = typeof args[0] === 'string' ? args[0] : args[0].url;
+                        window[sessionKey + '_networkLogs'].push({{
+                            type: 'fetch',
+                            url: url,
+                            timestamp: new Date().toISOString(),
+                            sessionId: sessionId
+                        }});
+                        return originalFetch.apply(this, args);
+                    }};
+                }}
+            }})();
+        ");
+    }
     
     [McpServerTool]
     [Description("Navigate to a URL")]
@@ -70,7 +162,6 @@ public class PlaywrightTools(ToolService toolService, ChromeService chromeServic
     {
         try
         {
-            // Try to get page from ToolService first, then fall back to local storage
             var page = toolService.GetPage(sessionId) ?? 
                       (_activeSessions.TryGetValue(sessionId, out var localPage) ? localPage : null);
                       
@@ -87,23 +178,24 @@ public class PlaywrightTools(ToolService toolService, ChromeService chromeServic
     }
 
     [McpServerTool]
-    [Description("Fill a form field using data-testid or CSS selector")]
+    [Description("Fill a form field using CSS selector or data-testid")]
     public async Task<string> FillField(
-        [Description("Field selector (data-testid or CSS selector)")] string selector,
+        [Description("Field selector (CSS selector or data-testid value)")] string selector,
         [Description("Value to fill")] string value,
         [Description("Session ID")] string sessionId = "default")
     {
         try
         {
-            // Try to get page from ToolService first, then fall back to local storage
             var page = toolService.GetPage(sessionId) ?? 
                       (_activeSessions.TryGetValue(sessionId, out var localPage) ? localPage : null);
                       
             if (page == null)
                 return $"Session {sessionId} not found.";
 
-            var fullSelector = selector.StartsWith('[') ? selector : $"[data-testid='{selector}']";
-            await page.Locator(fullSelector).FillAsync(value);
+            // FIXED: Use smart selector determination instead of automatic data-testid wrapping
+            var finalSelector = DetermineSelector(selector);
+            
+            await page.Locator(finalSelector).FillAsync(value);
             return $"Field {selector} filled in with value {value}";
         }
         catch (Exception ex)
@@ -113,22 +205,22 @@ public class PlaywrightTools(ToolService toolService, ChromeService chromeServic
     }
 
     [McpServerTool]
-    [Description("Click an element using data-testid or CSS selector")]
+    [Description("Click an element using CSS selector or data-testid")]
     public async Task<string> ClickElement(
-        [Description("Element selector (data-testid or CSS selector)")] string selector,
+        [Description("Element selector (CSS selector or data-testid value)")] string selector,
         [Description("Session ID")] string sessionId = "default")
     {
         try
         {
-            // Try to get page from ToolService first, then fall back to local storage
             var page = toolService.GetPage(sessionId) ?? 
                       (_activeSessions.TryGetValue(sessionId, out var localPage) ? localPage : null);
                       
             if (page == null)
                 return $"Session {sessionId} not found.";
 
-            var fullSelector = selector.StartsWith('[') ? selector : $"[data-testid='{selector}']";
-            await page.Locator(fullSelector).ClickAsync();
+            var finalSelector = DetermineSelector(selector);
+            
+            await page.Locator(finalSelector).ClickAsync();
             return $"Successfully clicked element {selector}";
         }
         catch (Exception ex)
@@ -146,187 +238,20 @@ public class PlaywrightTools(ToolService toolService, ChromeService chromeServic
     {
         try
         {
-            // Try to get page from ToolService first, then fall back to local storage
             var page = toolService.GetPage(sessionId) ?? 
                       (_activeSessions.TryGetValue(sessionId, out var localPage) ? localPage : null);
                       
             if (page == null)
                 return $"Session {sessionId} not found.";
 
-            var fullSelector = selector.StartsWith('[') ? selector : $"[data-testid='{selector}']";
-            await page.Locator(fullSelector).SelectOptionAsync(value);
+            var finalSelector = DetermineSelector(selector);
+            
+            await page.Locator(finalSelector).SelectOptionAsync(value);
             return $"Field {selector} filled in with value {value}";
         }
         catch (Exception ex)
         {
             return $"Failed to select option: {ex.Message}";
-        }
-    }
-
-    [McpServerTool]
-    [Description("Clear localStorage and sessionStorage")]
-    public async Task<string> ClearLocalStorage(
-        [Description("Session ID")] string sessionId = "default")
-    {
-        try
-        {
-            // Try to get page from ToolService first, then fall back to local storage
-            var page = toolService.GetPage(sessionId) ?? 
-                      (_activeSessions.TryGetValue(sessionId, out var localPage) ? localPage : null);
-                      
-            if (page == null)
-                return $"Session {sessionId} not found.";
-
-            await page.EvaluateAsync("() => { localStorage.clear(); sessionStorage.clear(); }");
-            return "LocalStorage and sessionStorage cleared successfully";
-        }
-        catch (Exception ex)
-        {
-            return $"Failed to clear localStorage: {ex.Message}";
-        }
-    }
-
-    [McpServerTool]
-    [Description("Get localStorage contents")]
-    public async Task<string> GetLocalStorageContents(
-        [Description("Session ID")] string sessionId = "default")
-    {
-        try
-        {
-            // Try to get page from ToolService first, then fall back to local storage
-            var page = toolService.GetPage(sessionId) ?? 
-                      (_activeSessions.TryGetValue(sessionId, out var localPage) ? localPage : null);
-                      
-            if (page == null)
-                return $"Session {sessionId} not found.";
-
-            var result = await page.EvaluateAsync<string>(
-                "() => JSON.stringify(Object.keys(localStorage).reduce((obj, key) => { obj[key] = localStorage.getItem(key); return obj; }, {}), null, 2)");
-            
-            return string.IsNullOrEmpty(result) || result == "{}" ? "LocalStorage is empty" : $"LocalStorage contents:\n{result}";
-        }
-        catch (Exception ex)
-        {
-            return $"Failed to get localStorage: {ex.Message}";
-        }
-    }
-
-    [McpServerTool]
-    [Description("Validate element state (visible, enabled, contains text)")]
-    public async Task<string> ValidateElement(
-        [Description("Element selector")] string selector,
-        [Description("Validation type: visible, enabled, disabled, text")] string validationType,
-        [Description("Expected text content (for text validation)")] string? expectedText = null,
-        [Description("Session ID")] string sessionId = "default")
-    {
-        try
-        {
-            // Try to get page from ToolService first, then fall back to local storage
-            var page = toolService.GetPage(sessionId) ?? 
-                      (_activeSessions.TryGetValue(sessionId, out var localPage) ? localPage : null);
-                      
-            if (page == null)
-                return $"Session {sessionId} not found.";
-
-            var fullSelector = selector.StartsWith('[') ? selector : $"[data-testid='{selector}']";
-            var element = page.Locator(fullSelector);
-
-            return validationType.ToLower() switch
-            {
-                "visible" => await element.IsVisibleAsync() ? $"Element {selector} is visible" : $"Element {selector} is not visible",
-                "enabled" => await element.IsEnabledAsync() ? $"Element {selector} is enabled" : $"Element {selector} is disabled",
-                "disabled" => !await element.IsEnabledAsync() ? $"Element {selector} is disabled" : $"Element {selector} is enabled",
-                "text" => await ValidateElementText(element, expectedText ?? "", selector),
-                _ => $"Unknown validation type: {validationType}"
-            };
-        }
-        catch (Exception ex)
-        {
-            return $"Element validation failed: {ex.Message}";
-        }
-    }
-
-    [McpServerTool]
-    [Description("Take a screenshot of the current page")]
-    public async Task<string> TakeScreenshot(
-        [Description("Filename for screenshot")] string filename = "screenshot.png",
-        [Description("Session ID")] string sessionId = "default")
-    {
-        try
-        {
-            // Try to get page from ToolService first, then fall back to local storage
-            var page = toolService.GetPage(sessionId) ?? 
-                      (_activeSessions.TryGetValue(sessionId, out var localPage) ? localPage : null);
-                      
-            if (page == null)
-                return $"Session {sessionId} not found.";
-
-            await page.ScreenshotAsync(new PageScreenshotOptions { Path = filename, FullPage = true });
-            return $"Screenshot saved as {filename}";
-        }
-        catch (Exception ex)
-        {
-            return $"Failed to take screenshot: {ex.Message}";
-        }
-    }
-
-    [McpServerTool]
-    [Description("Execute a complete test case from MongoDB test collection")]
-    public async Task<string> ExecuteTestCase(
-        [Description("Test case data as JSON string")] string testCaseJson,
-        [Description("Session ID")] string sessionId = "default")
-    {
-        try
-        {
-            // Try to get page from ToolService first, then fall back to local storage
-            var page = toolService.GetPage(sessionId) ?? 
-                      (_activeSessions.TryGetValue(sessionId, out var localPage) ? localPage : null);
-                      
-            if (page == null)
-                return $"Session {sessionId} not found.";
-
-            var testCase = JsonSerializer.Deserialize<TestCase>(testCaseJson);
-            if (testCase?.TestSteps == null) return "Invalid test case format";
-
-            var results = new List<string>();
-            
-            foreach (var step in testCase.TestSteps)
-            {
-                var result = await ToolService.ExecuteTestStep(page, step);
-                results.Add($"Step {step.Step}: {JsonSerializer.Serialize(result)}");
-            }
-
-            return $"Test case '{testCase.Title}' executed:\n{string.Join("\n", results)}";
-        }
-        catch (Exception ex)
-        {
-            return $"Test execution failed: {ex.Message}";
-        }
-    }
-
-    [McpServerTool]
-    [Description("Wait for a specific element to appear")]
-    public async Task<string> WaitForElement(
-        [Description("Element selector")] string selector,
-        [Description("Timeout in milliseconds")] int timeoutMs = 30000,
-        [Description("Session ID")] string sessionId = "default")
-    {
-        try
-        {
-            // Try to get page from ToolService first, then fall back to local storage
-            var page = toolService.GetPage(sessionId) ?? 
-                      (_activeSessions.TryGetValue(sessionId, out var localPage) ? localPage : null);
-                      
-            if (page == null)
-                return $"Session {sessionId} not found.";
-
-            var fullSelector = selector.StartsWith('[') ? selector : $"[data-testid='{selector}']";
-            await page.Locator(fullSelector).WaitForAsync(new LocatorWaitForOptions { Timeout = timeoutMs });
-            return $"Element {selector} appeared within {timeoutMs}ms";
-        }
-        catch (Exception ex)
-        {
-            return $"Element wait failed: {ex.Message}";
         }
     }
 
@@ -338,7 +263,6 @@ public class PlaywrightTools(ToolService toolService, ChromeService chromeServic
     {
         try
         {
-            // Try to get page from ToolService first, then fall back to local storage
             var page = toolService.GetPage(sessionId) ?? 
                       (_activeSessions.TryGetValue(sessionId, out var localPage) ? localPage : null);
                       
@@ -355,13 +279,55 @@ public class PlaywrightTools(ToolService toolService, ChromeService chromeServic
     }
 
     [McpServerTool]
+    [Description("Get network activity from the current session")]
+    public async Task<string> GetNetworkActivity(
+        [Description("Session ID")] string sessionId = "default",
+        [Description("Filter by URL pattern (optional)")] string? urlFilter = null)
+    {
+        try
+        {
+            // FIXED: Use session-specific network logs
+            if (!_sessionData.TryGetValue(sessionId, out var sessionData))
+                return $"Session {sessionId} not found.";
+
+            var networkLogs = sessionData.NetworkLogs;
+            
+            var filteredLogs = string.IsNullOrEmpty(urlFilter) 
+                ? networkLogs 
+                : networkLogs.Where(log => log.Url.Contains(urlFilter, StringComparison.OrdinalIgnoreCase));
+
+            if (!filteredLogs.Any())
+                return string.IsNullOrEmpty(urlFilter) 
+                    ? $"No network activity captured in session {sessionId}" 
+                    : $"No network activity matching '{urlFilter}' found in session {sessionId}";
+
+            var networkSummary = filteredLogs.Select(log => new 
+            {
+                Type = log.Type,
+                Method = log.Method,
+                Url = log.Url,
+                Status = log.Status > 0 ? log.Status.ToString() : "pending",
+                Timestamp = log.Timestamp.ToString("yyyy-MM-dd HH:mm:ss")
+            });
+
+            return $"Network activity for session {sessionId}:\n{JsonSerializer.Serialize(networkSummary, new JsonSerializerOptions { WriteIndented = true })}";
+        }
+        catch (Exception ex)
+        {
+            return $"Failed to get network activity: {ex.Message}";
+        }
+    }
+
+    [McpServerTool]
     [Description("Close browser session and cleanup resources")]
     public async Task<string> CloseBrowser(
         [Description("Session ID")] string sessionId = "default")
     {
         try
         {
-            // Try to get page from both sources and close if it exists
+            // Clean up session data
+            _sessionData.Remove(sessionId);
+            
             var page = toolService.GetPage(sessionId) ?? 
                       (_activeSessions.TryGetValue(sessionId, out var localPage) ? localPage : null);
             
@@ -384,303 +350,26 @@ public class PlaywrightTools(ToolService toolService, ChromeService chromeServic
         }
     }
 
-    [McpServerTool]
-    [Description("Get console messages (errors, warnings, logs) from the current session")]
-    public async Task<string> GetConsoleMessages(
-        [Description("Session ID")] string sessionId = "default",
-        [Description("Message type filter: all, error, warning, log")] string messageType = "all")
+    // Helper method for smart selector determination
+    private static string DetermineSelector(string selector)
     {
-        try
+        // FIXED: Smart selector determination instead of automatic wrapping
+        
+        // If it's already a CSS selector (contains CSS syntax), use as-is
+        if (selector.Contains('[') || selector.Contains('.') || selector.Contains('#') || 
+            selector.Contains('>') || selector.Contains(' ') || selector.Contains(':'))
         {
-            // Try to get page from ToolService first, then fall back to local storage
-            var page = toolService.GetPage(sessionId) ?? 
-                      (_activeSessions.TryGetValue(sessionId, out var localPage) ? localPage : null);
-                      
-            if (page == null)
-                return $"Session {sessionId} not found.";
-
-            // Get console messages that have been captured
-            var consoleMessages = await page.EvaluateAsync<object[]>(@"
-                () => {
-                    if (!window.consoleLogs) window.consoleLogs = [];
-                    return window.consoleLogs;
-                }
-            ");
-
-            var filteredMessages = messageType.ToLower() == "all" 
-                ? consoleMessages 
-                : consoleMessages.Where(msg => msg.ToString()?.Contains(messageType, StringComparison.OrdinalIgnoreCase) == true);
-
-            return consoleMessages.Any() 
-                ? $"Console messages:\n{JsonSerializer.Serialize(filteredMessages, new JsonSerializerOptions { WriteIndented = true })}"
-                : "No console messages captured";
+            return selector;
         }
-        catch (Exception ex)
+        
+        // If it looks like a simple data-testid value, wrap it
+        // This preserves the data-testid functionality while avoiding the wrapping bug
+        if (!string.IsNullOrEmpty(selector) && !selector.Contains('='))
         {
-            return $"Failed to get console messages: {ex.Message}";
+            return $"[data-testid='{selector}']";
         }
-    }
-
-    [McpServerTool]
-    [Description("Get network requests and responses from the current session")]
-    public async Task<string> GetNetworkActivity(
-        [Description("Session ID")] string sessionId = "default",
-        [Description("Filter by URL pattern (optional)")] string? urlFilter = null)
-    {
-        try
-        {
-            // Try to get page from ToolService first, then fall back to local storage
-            var page = toolService.GetPage(sessionId) ?? 
-                      (_activeSessions.TryGetValue(sessionId, out var localPage) ? localPage : null);
-                      
-            if (page == null)
-                return $"Session {sessionId} not found.";
-
-            // Get network activity that has been captured
-            var networkActivity = await page.EvaluateAsync<object[]>(@"
-                () => {
-                    if (!window.networkLogs) window.networkLogs = [];
-                    return window.networkLogs;
-                }
-            ");
-
-            var filteredActivity = string.IsNullOrEmpty(urlFilter) 
-                ? networkActivity 
-                : networkActivity.Where(req => req.ToString()?.Contains(urlFilter, StringComparison.OrdinalIgnoreCase) == true);
-
-            return networkActivity.Any() 
-                ? $"Network activity:\n{JsonSerializer.Serialize(filteredActivity, new JsonSerializerOptions { WriteIndented = true })}"
-                : "No network activity captured";
-        }
-        catch (Exception ex)
-        {
-            return $"Failed to get network activity: {ex.Message}";
-        }
-    }
-
-    [McpServerTool]
-    [Description("Monitor localStorage changes in real-time")]
-    public async Task<string> MonitorLocalStorageChanges(
-        [Description("Session ID")] string sessionId = "default")
-    {
-        try
-        {
-            // Try to get page from ToolService first, then fall back to local storage
-            var page = toolService.GetPage(sessionId) ?? 
-                      (_activeSessions.TryGetValue(sessionId, out var localPage) ? localPage : null);
-                      
-            if (page == null)
-                return $"Session {sessionId} not found.";
-
-            await page.AddInitScriptAsync(@"
-                (() => {
-                    if (!window.localStorageMonitor) {
-                        window.localStorageMonitor = [];
-                        const originalSetItem = localStorage.setItem;
-                        localStorage.setItem = function(key, value) {
-                            window.localStorageMonitor.push({
-                                action: 'setItem',
-                                key: key,
-                                value: value.substring(0, 200) + (value.length > 200 ? '...' : ''),
-                                timestamp: new Date().toISOString()
-                            });
-                            return originalSetItem.call(this, key, value);
-                        };
-                        
-                        const originalRemoveItem = localStorage.removeItem;
-                        localStorage.removeItem = function(key) {
-                            window.localStorageMonitor.push({
-                                action: 'removeItem', 
-                                key: key,
-                                timestamp: new Date().toISOString()
-                            });
-                            return originalRemoveItem.call(this, key);
-                        };
-                    }
-                })();
-            ");
-
-            return "LocalStorage monitoring activated. Use GetLocalStorageActivity to view changes.";
-        }
-        catch (Exception ex)
-        {
-            return $"Failed to setup localStorage monitoring: {ex.Message}";
-        }
-    }
-
-    [McpServerTool]
-    [Description("Get localStorage activity log")]
-    public async Task<string> GetLocalStorageActivity(
-        [Description("Session ID")] string sessionId = "default")
-    {
-        try
-        {
-            // Try to get page from ToolService first, then fall back to local storage
-            var page = toolService.GetPage(sessionId) ?? 
-                      (_activeSessions.TryGetValue(sessionId, out var localPage) ? localPage : null);
-                      
-            if (page == null)
-                return $"Session {sessionId} not found.";
-
-            var activity = await page.EvaluateAsync<object[]>(@"
-                () => {
-                    return window.localStorageMonitor || [];
-                }
-            ");
-
-            return activity.Any() 
-                ? $"LocalStorage activity:\n{JsonSerializer.Serialize(activity, new JsonSerializerOptions { WriteIndented = true })}"
-                : "No localStorage activity recorded";
-        }
-        catch (Exception ex)
-        {
-            return $"Failed to get localStorage activity: {ex.Message}";
-        }
-    }
-
-    [McpServerTool]
-    [Description("Get captured console logs from ChromeService")]
-    public async Task<string> GetCapturedConsoleLogs(
-        [Description("Session ID")] string sessionId = "default",
-        [Description("Log type filter: all, log, error, warning")] string logType = "all")
-    {
-        try
-        {
-            var consoleLogs = chromeService.GetConsoleLogs();
-            
-            var filteredLogs = logType.ToLower() == "all" 
-                ? consoleLogs 
-                : consoleLogs.Where(log => log.Type.Equals(logType, StringComparison.OrdinalIgnoreCase));
-
-            if (!filteredLogs.Any())
-                return $"No console logs of type '{logType}' found";
-
-            var logSummary = filteredLogs.Select(log => new 
-            {
-                Type = log.Type,
-                Message = log.Text,
-                Timestamp = log.Timestamp.ToString("yyyy-MM-dd HH:mm:ss")
-            });
-
-            return $"Console logs ({logType}):\n{JsonSerializer.Serialize(logSummary, new JsonSerializerOptions { WriteIndented = true })}";
-        }
-        catch (Exception ex)
-        {
-            return $"Failed to get console logs: {ex.Message}";
-        }
-    }
-
-    [McpServerTool]
-    [Description("Get captured network requests and responses")]
-    public async Task<string> GetCapturedNetworkLogs(
-        [Description("Session ID")] string sessionId = "default",
-        [Description("URL filter (optional)")] string? urlFilter = null)
-    {
-        try
-        {
-            var networkLogs = chromeService.GetNetworkLogs();
-            
-            var filteredLogs = string.IsNullOrEmpty(urlFilter) 
-                ? networkLogs 
-                : networkLogs.Where(log => log.Url.Contains(urlFilter, StringComparison.OrdinalIgnoreCase));
-
-            if (!filteredLogs.Any())
-                return string.IsNullOrEmpty(urlFilter) 
-                    ? "No network activity captured" 
-                    : $"No network activity matching '{urlFilter}' found";
-
-            var networkSummary = filteredLogs.Select(log => new 
-            {
-                Type = log.Type,
-                Method = log.Method,
-                Url = log.Url,
-                Status = log.Status > 0 ? log.Status.ToString() : "pending",
-                Timestamp = log.Timestamp.ToString("yyyy-MM-dd HH:mm:ss")
-            });
-
-            return $"Network activity:\n{JsonSerializer.Serialize(networkSummary, new JsonSerializerOptions { WriteIndented = true })}";
-        }
-        catch (Exception ex)
-        {
-            return $"Failed to get network logs: {ex.Message}";
-        }
-    }
-
-    [McpServerTool]
-    [Description("Clear all captured logs (console and network)")]
-    public async Task<string> ClearCapturedLogs(
-        [Description("Session ID")] string sessionId = "default")
-    {
-        try
-        {
-            chromeService.ClearLogs();
-            
-            // Also clear browser-side logs if session exists
-            var page = toolService.GetPage(sessionId) ?? 
-                      (_activeSessions.TryGetValue(sessionId, out var localPage) ? localPage : null);
-            
-            if (page != null)
-            {
-                await page.EvaluateAsync(@"
-                    () => {
-                        if (window.consoleLogs) window.consoleLogs = [];
-                        if (window.networkLogs) window.networkLogs = [];
-                        if (window.localStorageMonitor) window.localStorageMonitor = [];
-                    }
-                ");
-            }
-
-            return "All logs cleared successfully";
-        }
-        catch (Exception ex)
-        {
-            return $"Failed to clear logs: {ex.Message}";
-        }
-    }
-
-    [McpServerTool]
-    [Description("Execute JavaScript with enhanced error capturing")]
-    public async Task<string> ExecuteJavaScriptWithErrorCapture(
-        [Description("JavaScript code to execute")] string jsCode,
-        [Description("Session ID")] string sessionId = "default")
-    {
-        try
-        {
-            // Try to get page from ToolService first, then fall back to local storage
-            var page = toolService.GetPage(sessionId) ?? 
-                      (_activeSessions.TryGetValue(sessionId, out var localPage) ? localPage : null);
-                      
-            if (page == null)
-                return $"Session {sessionId} not found.";
-
-            // Wrap the code to capture any errors
-            var wrappedCode = $@"
-                (() => {{
-                    try {{
-                        const result = {jsCode};
-                        return {{ success: true, result: result, error: null }};
-                    }} catch (error) {{
-                        return {{ success: false, result: null, error: error.message }};
-                    }}
-                }})()
-            ";
-
-            var result = await page.EvaluateAsync<object>(wrappedCode);
-            var resultJson = JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true });
-            
-            return $"JavaScript execution result:\n{resultJson}";
-        }
-        catch (Exception ex)
-        {
-            return $"JavaScript execution failed: {ex.Message}";
-        }
-    }
-
-    private static async Task<string> ValidateElementText(ILocator element, string expectedText, string selector)
-    {
-        var actualText = await element.TextContentAsync() ?? "";
-        return actualText.Contains(expectedText) 
-            ? $"Element {selector} contains expected text: {expectedText}"
-            : $"Element {selector} text '{actualText}' does not contain '{expectedText}'";
+        
+        // Default: use as-is
+        return selector;
     }
 }

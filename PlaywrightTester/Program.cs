@@ -15,7 +15,6 @@ builder.Services
     .AddSingleton<ChromeService>()
     .AddSingleton<FirefoxService>()
     .AddSingleton<WebKitService>()
-    .AddSingleton<TADERATCSTestingTools>()
     .AddSingleton<AdvancedTestingTools>()
     .AddSingleton<DatabaseTestingTools>()
     .AddLogging(logging =>
