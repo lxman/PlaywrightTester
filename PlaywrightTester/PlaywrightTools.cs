@@ -75,7 +75,13 @@ public class PlaywrightTools(ToolService toolService, ChromeService chromeServic
             // Keep backward compatibility with local storage
             _activeSessions[sessionId] = page;
             
-            return $"Browser {browserType} launched successfully. Session ID: {sessionId}";
+            // DEBUGGING: Verify session data was stored
+            var sessionDataExists = _sessionData.ContainsKey(sessionId);
+            var activeSessionExists = _activeSessions.ContainsKey(sessionId);
+            
+            return $"Browser {browserType} launched successfully. Session ID: {sessionId}\n" +
+                   $"DEBUG: Session data created: {sessionDataExists}, Active session stored: {activeSessionExists}\n" +
+                   $"DEBUG: Total sessions: {_sessionData.Count}, Active: {_activeSessions.Count}";
         }
         catch (Exception ex)
         {
@@ -91,6 +97,14 @@ public class PlaywrightTools(ToolService toolService, ChromeService chromeServic
 
         var sessionData = _sessionData[sessionId];
 
+        // DEBUGGING: Add a test log entry to verify session data works
+        sessionData.ConsoleLogs.Add(new ConsoleLogEntry
+        {
+            Type = "debug",
+            Text = $"Session {sessionId} debugging setup completed",
+            Timestamp = DateTime.UtcNow
+        });
+
         // Monitor console messages and store them in session-specific logs
         page.Console += (_, e) =>
         {
@@ -101,6 +115,8 @@ public class PlaywrightTools(ToolService toolService, ChromeService chromeServic
                 Timestamp = DateTime.UtcNow
             };
             sessionData.ConsoleLogs.Add(logEntry);
+            // DEBUGGING: Console log when we capture console messages
+            Console.WriteLine($"DEBUG: Console message captured for session {sessionId}: {e.Text}");
         };
 
         // Monitor network requests and store them in session-specific logs
@@ -114,6 +130,8 @@ public class PlaywrightTools(ToolService toolService, ChromeService chromeServic
                 Timestamp = DateTime.UtcNow
             };
             sessionData.NetworkLogs.Add(networkEntry);
+            // DEBUGGING: Console log when we capture network requests
+            Console.WriteLine($"DEBUG: Network request captured for session {sessionId}: {e.Method} {e.Url}");
         };
 
         page.Response += (_, e) =>
@@ -127,28 +145,23 @@ public class PlaywrightTools(ToolService toolService, ChromeService chromeServic
                 Timestamp = DateTime.UtcNow
             };
             sessionData.NetworkLogs.Add(networkEntry);
+            // DEBUGGING: Console log when we capture network responses
+            Console.WriteLine($"DEBUG: Network response captured for session {sessionId}: {e.Status} {e.Url}");
         };
 
-        // Setup enhanced debugging script with session isolation
+        // DEBUGGING: Add network activity tracking script
         await page.AddInitScriptAsync($@"
             (() => {{
                 const sessionId = '{sessionId}';
-                const sessionKey = 'session_' + sessionId;
+                console.log('DEBUG: Init script loaded for session ' + sessionId);
                 
-                // Network monitoring with session isolation
-                if (!window[sessionKey + '_networkLogs']) {{
-                    window[sessionKey + '_networkLogs'] = [];
-                    const originalFetch = window.fetch;
-                    window.fetch = function(...args) {{
-                        const url = typeof args[0] === 'string' ? args[0] : args[0].url;
-                        window[sessionKey + '_networkLogs'].push({{
-                            type: 'fetch',
-                            url: url,
-                            timestamp: new Date().toISOString(),
-                            sessionId: sessionId
-                        }});
-                        return originalFetch.apply(this, args);
-                    }};
+                // Log when page loads
+                if (document.readyState === 'loading') {{
+                    document.addEventListener('DOMContentLoaded', () => {{
+                        console.log('DEBUG: DOMContentLoaded for session ' + sessionId);
+                    }});
+                }} else {{
+                    console.log('DEBUG: Document already loaded for session ' + sessionId);
                 }}
             }})();
         ");
@@ -163,7 +176,7 @@ public class PlaywrightTools(ToolService toolService, ChromeService chromeServic
         try
         {
             var page = toolService.GetPage(sessionId) ?? 
-                      (_activeSessions.TryGetValue(sessionId, out var localPage) ? localPage : null);
+                      (_activeSessions.GetValueOrDefault(sessionId));
                       
             if (page == null)
                 return $"Session {sessionId} not found. Launch browser first.";
@@ -187,7 +200,7 @@ public class PlaywrightTools(ToolService toolService, ChromeService chromeServic
         try
         {
             var page = toolService.GetPage(sessionId) ?? 
-                      (_activeSessions.TryGetValue(sessionId, out var localPage) ? localPage : null);
+                      (_activeSessions.GetValueOrDefault(sessionId));
                       
             if (page == null)
                 return $"Session {sessionId} not found.";
@@ -213,7 +226,7 @@ public class PlaywrightTools(ToolService toolService, ChromeService chromeServic
         try
         {
             var page = toolService.GetPage(sessionId) ?? 
-                      (_activeSessions.TryGetValue(sessionId, out var localPage) ? localPage : null);
+                      (_activeSessions.GetValueOrDefault(sessionId));
                       
             if (page == null)
                 return $"Session {sessionId} not found.";
@@ -239,7 +252,7 @@ public class PlaywrightTools(ToolService toolService, ChromeService chromeServic
         try
         {
             var page = toolService.GetPage(sessionId) ?? 
-                      (_activeSessions.TryGetValue(sessionId, out var localPage) ? localPage : null);
+                      (_activeSessions.GetValueOrDefault(sessionId));
                       
             if (page == null)
                 return $"Session {sessionId} not found.";
@@ -264,7 +277,7 @@ public class PlaywrightTools(ToolService toolService, ChromeService chromeServic
         try
         {
             var page = toolService.GetPage(sessionId) ?? 
-                      (_activeSessions.TryGetValue(sessionId, out var localPage) ? localPage : null);
+                      (_activeSessions.GetValueOrDefault(sessionId));
                       
             if (page == null)
                 return $"Session {sessionId} not found.";
@@ -286,11 +299,24 @@ public class PlaywrightTools(ToolService toolService, ChromeService chromeServic
     {
         try
         {
+            // DEBUGGING: Show all available sessions
+            var availableSessions = string.Join(", ", _sessionData.Keys);
+            var activeSessionsInfo = string.Join(", ", _activeSessions.Keys);
+            
             // FIXED: Use session-specific network logs
             if (!_sessionData.TryGetValue(sessionId, out var sessionData))
-                return $"Session {sessionId} not found.";
+                return $"Session {sessionId} not found.\n" +
+                       $"Available session data: [{availableSessions}]\n" +
+                       $"Active sessions: [{activeSessionsInfo}]\n" +
+                       $"Total session data count: {_sessionData.Count}";
 
             var networkLogs = sessionData.NetworkLogs;
+            var consoleLogs = sessionData.ConsoleLogs;
+            
+            // DEBUGGING: Show console logs for troubleshooting
+            var consoleInfo = consoleLogs.Count > 0 
+                ? $"Console logs ({consoleLogs.Count}): {string.Join(", ", consoleLogs.Take(3).Select(c => c.Text))}"
+                : "No console logs";
             
             var filteredLogs = string.IsNullOrEmpty(urlFilter) 
                 ? networkLogs 
@@ -298,8 +324,11 @@ public class PlaywrightTools(ToolService toolService, ChromeService chromeServic
 
             if (!filteredLogs.Any())
                 return string.IsNullOrEmpty(urlFilter) 
-                    ? $"No network activity captured in session {sessionId}" 
-                    : $"No network activity matching '{urlFilter}' found in session {sessionId}";
+                    ? $"No network activity captured in session {sessionId} (Total logs: {networkLogs.Count})\n" +
+                      $"DEBUG: {consoleInfo}\n" +
+                      $"Session created: {sessionData.CreatedAt}"
+                    : $"No network activity matching '{urlFilter}' found in session {sessionId} (Total logs: {networkLogs.Count})\n" +
+                      $"DEBUG: {consoleInfo}";
 
             var networkSummary = filteredLogs.Select(log => new 
             {
@@ -310,7 +339,8 @@ public class PlaywrightTools(ToolService toolService, ChromeService chromeServic
                 Timestamp = log.Timestamp.ToString("yyyy-MM-dd HH:mm:ss")
             });
 
-            return $"Network activity for session {sessionId}:\n{JsonSerializer.Serialize(networkSummary, new JsonSerializerOptions { WriteIndented = true })}";
+            return $"Network activity for session {sessionId}:\n{JsonSerializer.Serialize(networkSummary, new JsonSerializerOptions { WriteIndented = true })}\n" +
+                   $"DEBUG: {consoleInfo}";
         }
         catch (Exception ex)
         {
@@ -329,7 +359,7 @@ public class PlaywrightTools(ToolService toolService, ChromeService chromeServic
             _sessionData.Remove(sessionId);
             
             var page = toolService.GetPage(sessionId) ?? 
-                      (_activeSessions.TryGetValue(sessionId, out var localPage) ? localPage : null);
+                      (_activeSessions.GetValueOrDefault(sessionId));
             
             if (page != null)
             {

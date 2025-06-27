@@ -79,13 +79,14 @@ public class AdvancedTestingTools(ToolService toolService, ChromeService chromeS
                             
                             // Get navigation timing
                             const navigation = performance.getEntriesByType('navigation')[0];
+                            const memory = performance.memory || {};
                             const timing = {
                                 domContentLoaded: Math.round(navigation.domContentLoadedEventStart),
                                 loadComplete: Math.round(navigation.loadEventEnd),
                                 firstPaint: Math.round(performance.getEntriesByType('paint')[0]?.startTime || 0),
-                                memoryUsage: (performance as any).memory ? {
-                                    used: Math.round((performance as any).memory.usedJSHeapSize / 1024 / 1024),
-                                    total: Math.round((performance as any).memory.totalJSHeapSize / 1024 / 1024)
+                                memoryUsage: memory.usedJSHeapSize ? {
+                                    used: Math.round(memory.usedJSHeapSize / 1024 / 1024),
+                                    total: Math.round(memory.totalJSHeapSize / 1024 / 1024)
                                 } : null
                             };
                             
@@ -174,7 +175,7 @@ public class AdvancedTestingTools(ToolService toolService, ChromeService chromeS
                 }
             }
 
-            var fullSelector = selector.StartsWith('[') ? selector : $"[data-testid='{selector}']";
+            var fullSelector = DetermineSelector(selector);
             await page.SetInputFilesAsync(fullSelector, files.ToArray());
 
             return $"Uploaded {files.Count} files: {string.Join(", ", files.Select(f => f.Name))}";
@@ -267,7 +268,7 @@ public class AdvancedTestingTools(ToolService toolService, ChromeService chromeS
                 _ => throw new ArgumentException($"Unknown payload type: {payloadType}")
             };
 
-            var fullSelector = selector.StartsWith('[') ? selector : $"[data-testid='{selector}']";
+            var fullSelector = DetermineSelector(selector);
             
             // Clear field first
             await page.Locator(fullSelector).ClearAsync();
@@ -606,5 +607,99 @@ public class AdvancedTestingTools(ToolService toolService, ChromeService chromeS
         ");
 
         return $"Focus order analysis:\n{JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true })}";
+    }
+
+    // Helper method for smart selector determination
+    private static string DetermineSelector(string selector)
+    {
+        // Smart selector determination instead of automatic wrapping
+        
+        // If it's already a CSS selector (contains CSS syntax), use as-is
+        if (selector.Contains('[') || selector.Contains('.') || selector.Contains('#') || 
+            selector.Contains('>') || selector.Contains(' ') || selector.Contains(':'))
+        {
+            return selector;
+        }
+        
+        // If it looks like a simple data-testid value, wrap it
+        // This preserves the data-testid functionality while avoiding the wrapping bug
+        if (!string.IsNullOrEmpty(selector) && !selector.Contains('='))
+        {
+            return $"[data-testid='{selector}']";
+        }
+        
+        // Default: use as-is
+        return selector;
+    }
+
+    [McpServerTool]
+    [Description("Execute TADERATCS enrollment form success test")]
+    public async Task<string> ExecuteEnrollmentSuccessTest(
+        [Description("Base URL of enrollment form")] string baseUrl = "http://localhost:4200",
+        [Description("Browser session ID")] string sessionId = "default")
+    {
+        try
+        {
+            var page = toolService.GetPage(sessionId);
+            if (page == null) return $"Session {sessionId} not found.";
+
+            // Navigate to enrollment form
+            await page.GotoAsync(baseUrl);
+            
+            // Fill required personal information
+            await page.Locator("[data-testid='personal-first-name']").FillAsync("John");
+            await page.Locator("[data-testid='personal-last-name']").FillAsync("Smith");
+            await page.Locator("[data-testid='personal-date-of-birth']").FillAsync("1990-01-01");
+            await page.Locator("[data-testid='personal-ssn']").FillAsync("123-45-6789");
+            await page.Locator("[data-testid='personal-sex']").SelectOptionAsync("M");
+            
+            // Move to next section and validate
+            await page.Locator("[data-testid='tab-citizenship']").ClickAsync();
+            await page.Locator("[data-testid='citizenship-us-citizen-yes']").ClickAsync();
+            
+            // Check progress indicators
+            var personalInfoComplete = await page.Locator("[data-testid='progress-personal-info']").IsVisibleAsync();
+            
+            return $"TADERATCS enrollment test completed successfully. Personal info complete: {personalInfoComplete}";
+        }
+        catch (Exception ex)
+        {
+            return $"TADERATCS enrollment test failed: {ex.Message}";
+        }
+    }
+
+    [McpServerTool]
+    [Description("Test localStorage auto-save functionality")]
+    public async Task<string> TestLocalStorageAutoSave(
+        [Description("Browser session ID")] string sessionId = "default")
+    {
+        try
+        {
+            var page = toolService.GetPage(sessionId);
+            if (page == null) return $"Session {sessionId} not found.";
+
+            // Fill some form data
+            await page.Locator("[data-testid='personal-first-name']").FillAsync("TestUser");
+            await page.WaitForTimeoutAsync(1000); // Wait for auto-save
+            
+            // Check localStorage
+            var savedData = await page.EvaluateAsync<string>(@"
+                () => {
+                    return localStorage.getItem('enrollmentFormData') || 'No data saved';
+                }
+            ");
+            
+            // Refresh page and check if data persists
+            await page.ReloadAsync();
+            await page.WaitForTimeoutAsync(2000); // Wait for reload and restore
+            
+            var restoredValue = await page.Locator("[data-testid='personal-first-name']").InputValueAsync();
+            
+            return $"Auto-save test: Saved data: {savedData}, Restored value: {restoredValue}";
+        }
+        catch (Exception ex)
+        {
+            return $"Auto-save test failed: {ex.Message}";
+        }
     }
 }

@@ -12,7 +12,7 @@ public class ToolService
     // Browser Context Management
     public IBrowserContext? GetBrowserContext(string contextId)
     {
-        return _browserContexts.TryGetValue(contextId, out var context) ? context : null;
+        return _browserContexts.GetValueOrDefault(contextId);
     }
 
     public void StoreBrowserContext(string contextId, IBrowserContext context)
@@ -22,7 +22,7 @@ public class ToolService
 
     public IPage? GetPage(string pageId)
     {
-        return _pages.TryGetValue(pageId, out var page) ? page : null;
+        return _pages.GetValueOrDefault(pageId);
     }
 
     public void StorePage(string pageId, IPage page)
@@ -32,7 +32,7 @@ public class ToolService
 
     public IBrowser? GetBrowser(string browserId)
     {
-        return _browsers.TryGetValue(browserId, out var browser) ? browser : null;
+        return _browsers.GetValueOrDefault(browserId);
     }
 
     public void StoreBrowser(string browserId, IBrowser browser)
@@ -57,6 +57,8 @@ public class ToolService
                 "CLICK_ELEMENT" => await ClickElement(page, step.Target ?? ""),
                 "SELECT_OPTION" => await SelectOption(page, step.Target ?? "", step.Value ?? ""),
                 "VALIDATE_ELEMENT" => await ValidateElement(page, step.Target ?? "", step.Validation ?? ""),
+                "WAIT" => await WaitForElement(page, step.Target ?? ""),
+                "CLEAR_FIELD" => await ClearField(page, step.Target ?? ""),
                 _ => new { success = false, error = $"Unknown action: {step.Action}" }
             };
         }
@@ -75,31 +77,65 @@ public class ToolService
     private static async Task<object> FillField(IPage page, string selector, string value)
     {
         // Support data-testid selectors
-        var fullSelector = selector.StartsWith('[') ? selector : $"[data-testid='{selector}']";
+        var fullSelector = DetermineSelector(selector);
         await page.Locator(fullSelector).FillAsync(value);
         return new { success = true, message = $"Field {selector} filled with value {value}" };
     }
 
     private static async Task<object> ClickElement(IPage page, string selector)
     {
-        var fullSelector = selector.StartsWith('[') ? selector : $"[data-testid='{selector}']";
+        var fullSelector = DetermineSelector(selector);
         await page.Locator(fullSelector).ClickAsync();
         return new { success = true, message = $"Clicked element {selector}" };
     }
 
     private static async Task<object> SelectOption(IPage page, string selector, string value)
     {
-        var fullSelector = selector.StartsWith('[') ? selector : $"[data-testid='{selector}']";
+        var fullSelector = DetermineSelector(selector);
         await page.Locator(fullSelector).SelectOptionAsync(value);
         return new { success = true, message = $"Selected option {value} in {selector}" };
     }
 
     private static async Task<object> ValidateElement(IPage page, string selector, string validation)
     {
-        var fullSelector = selector.StartsWith('[') ? selector : $"[data-testid='{selector}']";
+        var fullSelector = DetermineSelector(selector);
         var element = page.Locator(fullSelector);
         var isVisible = await element.IsVisibleAsync();
         return new { success = isVisible, message = $"Element {selector} validation: {validation}" };
+    }
+
+    private static async Task<object> WaitForElement(IPage page, string selector)
+    {
+        var fullSelector = DetermineSelector(selector);
+        await page.Locator(fullSelector).WaitForAsync();
+        return new { success = true, message = $"Successfully waited for element {selector}" };
+    }
+
+    private static async Task<object> ClearField(IPage page, string selector)
+    {
+        var fullSelector = DetermineSelector(selector);
+        await page.Locator(fullSelector).ClearAsync();
+        return new { success = true, message = $"Field {selector} cleared" };
+    }
+
+    // Helper method for smart selector determination
+    private static string DetermineSelector(string selector)
+    {
+        // If it's already a CSS selector (contains CSS syntax), use as-is
+        if (selector.Contains('[') || selector.Contains('.') || selector.Contains('#') || 
+            selector.Contains('>') || selector.Contains(' ') || selector.Contains(':'))
+        {
+            return selector;
+        }
+        
+        // If it looks like a simple data-testid value, wrap it
+        if (!string.IsNullOrEmpty(selector) && !selector.Contains('='))
+        {
+            return $"[data-testid='{selector}']";
+        }
+        
+        // Default: use as-is
+        return selector;
     }
 
     // Cleanup

@@ -1,6 +1,8 @@
 using System.ComponentModel;
 using System.Text.Json;
 using ModelContextProtocol.Server;
+using MongoDB.Driver;
+using MongoDB.Bson;
 
 namespace PlaywrightTester;
 
@@ -17,37 +19,228 @@ public class DatabaseTestingTools(ToolService toolService)
     {
         try
         {
-            // This is a placeholder - you'd need to add MongoDB.Driver package
-            // and implement actual MongoDB connection
+            // Connect to MongoDB
+            var client = new MongoClient(connectionString);
+            var database = client.GetDatabase(databaseName);
+            var testCollection = database.GetCollection<BsonDocument>("testing");
             
-            var mockTestCase = new
+            // Find the test case
+            var filter = Builders<BsonDocument>.Filter.Eq("_id", testCaseId);
+            var testCase = await testCollection.Find(filter).FirstOrDefaultAsync();
+            
+            if (testCase == null)
             {
-                _id = testCaseId,
-                title = "Sample Test Case from MongoDB",
-                testSteps = new object[]
-                {
-                    new { step = 1, action = "NAVIGATE", target = "tab-info", message = "Navigate to Info tab" },
-                    new { step = 2, action = "FILL_FIELD", target = "personal-first-name", value = "John", message = "Field personal-first-name filled in with value John" },
-                    new { step = 3, action = "FILL_FIELD", target = "personal-last-name", value = "Smith", message = "Field personal-last-name filled in with value Smith" }
-                }
-            };
-
+                return $"Test case '{testCaseId}' not found in MongoDB collection 'testing'";
+            }
+            
+            // Extract test steps
+            var testSteps = testCase.GetValue("testSteps", new BsonArray()).AsBsonArray;
             var page = toolService.GetPage(sessionId);
             if (page == null) return $"Session {sessionId} not found.";
 
             var results = new List<string>();
-            foreach (var step in mockTestCase.testSteps)
+            var testTitle = testCase.GetValue("title", "Unknown Test").AsString;
+            
+            results.Add($"Executing test case: {testTitle}");
+            
+            foreach (var stepElement in testSteps)
             {
-                var result = await ToolService.ExecuteTestStep(page, step);
-                dynamic dynamicStep = step;
-                results.Add($"Step {dynamicStep.step}: {JsonSerializer.Serialize(result)}");
+                if (stepElement.IsBsonDocument)
+                {
+                    var step = stepElement.AsBsonDocument;
+                    var stepObj = new
+                    {
+                        step = step.GetValue("step", 0).ToInt32(),
+                        action = step.GetValue("action", "").AsString,
+                        target = step.GetValue("target", "").AsString,
+                        value = step.GetValue("value", "").AsString,
+                        message = step.GetValue("message", "").AsString
+                    };
+                    
+                    var result = await ToolService.ExecuteTestStep(page, stepObj);
+                    results.Add($"Step {stepObj.step}: {JsonSerializer.Serialize(result)}");
+                }
             }
 
-            return $"MongoDB test case '{testCaseId}' executed:\n{string.Join("\n", results)}";
+            return $"MongoDB test case '{testCaseId}' executed successfully:\n{string.Join("\n", results)}";
+        }
+        catch (MongoException ex)
+        {
+            return $"MongoDB connection failed: {ex.Message}";
         }
         catch (Exception ex)
         {
             return $"MongoDB test execution failed: {ex.Message}";
+        }
+    }
+
+    [McpServerTool]
+    [Description("Query MongoDB collection for test data")]
+    public async Task<string> QueryMongoCollection(
+        [Description("Collection name to query")] string collectionName,
+        [Description("MongoDB query filter as JSON")] string filterJson = "{}",
+        [Description("Maximum documents to return")] int limit = 10,
+        [Description("MongoDB connection string")] string connectionString = "mongodb://localhost:27017",
+        [Description("Database name")] string databaseName = "test")
+    {
+        try
+        {
+            var client = new MongoClient(connectionString);
+            var database = client.GetDatabase(databaseName);
+            var collection = database.GetCollection<BsonDocument>(collectionName);
+            
+            var filter = BsonDocument.Parse(filterJson);
+            var documents = await collection.Find(filter).Limit(limit).ToListAsync();
+            
+            if (!documents.Any())
+            {
+                return $"No documents found in collection '{collectionName}' with filter: {filterJson}";
+            }
+            
+            var results = documents.Select(doc => doc.ToJson()).ToArray();
+            return $"Found {documents.Count} documents in '{collectionName}':\n{string.Join("\n---\n", results)}";
+        }
+        catch (MongoException ex)
+        {
+            return $"MongoDB query failed: {ex.Message}";
+        }
+        catch (Exception ex)
+        {
+            return $"Query execution failed: {ex.Message}";
+        }
+    }
+
+    [McpServerTool]
+    [Description("Insert test data into MongoDB collection")]
+    public async Task<string> InsertTestData(
+        [Description("Collection name")] string collectionName,
+        [Description("Test data as JSON")] string testDataJson,
+        [Description("MongoDB connection string")] string connectionString = "mongodb://localhost:27017",
+        [Description("Database name")] string databaseName = "test")
+    {
+        try
+        {
+            var client = new MongoClient(connectionString);
+            var database = client.GetDatabase(databaseName);
+            var collection = database.GetCollection<BsonDocument>(collectionName);
+            
+            var document = BsonDocument.Parse(testDataJson);
+            await collection.InsertOneAsync(document);
+            
+            var insertedId = document.GetValue("_id", ObjectId.GenerateNewId()).ToString();
+            return $"Successfully inserted test data into '{collectionName}' with ID: {insertedId}";
+        }
+        catch (MongoException ex)
+        {
+            return $"MongoDB insert failed: {ex.Message}";
+        }
+        catch (Exception ex)
+        {
+            return $"Insert operation failed: {ex.Message}";
+        }
+    }
+
+    [McpServerTool]
+    [Description("Cleanup test data from MongoDB collection")]
+    public async Task<string> CleanupTestData(
+        [Description("Collection name")] string collectionName,
+        [Description("Filter for documents to delete as JSON")] string filterJson = "{}",
+        [Description("MongoDB connection string")] string connectionString = "mongodb://localhost:27017",
+        [Description("Database name")] string databaseName = "test")
+    {
+        try
+        {
+            var client = new MongoClient(connectionString);
+            var database = client.GetDatabase(databaseName);
+            var collection = database.GetCollection<BsonDocument>(collectionName);
+            
+            var filter = BsonDocument.Parse(filterJson);
+            var result = await collection.DeleteManyAsync(filter);
+            
+            return $"Deleted {result.DeletedCount} documents from '{collectionName}' collection";
+        }
+        catch (MongoException ex)
+        {
+            return $"MongoDB cleanup failed: {ex.Message}";
+        }
+        catch (Exception ex)
+        {
+            return $"Cleanup operation failed: {ex.Message}";
+        }
+    }
+
+    [McpServerTool]
+    [Description("Validate TADERATCS enrollment data in MongoDB")]
+    public async Task<string> ValidateEnrollmentData(
+        [Description("Applicant identifier")] string applicantId,
+        [Description("MongoDB connection string")] string connectionString = "mongodb://localhost:27017",
+        [Description("Database name")] string databaseName = "test")
+    {
+        try
+        {
+            var client = new MongoClient(connectionString);
+            var database = client.GetDatabase(databaseName);
+            
+            var enrollments = database.GetCollection<BsonDocument>("enrollments");
+            
+            // Find enrollment by applicant ID
+            var enrollmentFilter = Builders<BsonDocument>.Filter.Eq("Applicant.Identifier", applicantId);
+            var enrollment = await enrollments.Find(enrollmentFilter).FirstOrDefaultAsync();
+            
+            if (enrollment == null)
+            {
+                return $"No enrollment found for applicant ID: {applicantId}";
+            }
+            
+            var validationResults = new List<string>();
+            
+            // Validate required fields
+            var applicant = enrollment.GetValue("Applicant", new BsonDocument()).AsBsonDocument;
+            
+            // Check SSN format
+            var ssn = applicant.GetValue("SsnIdentification", "").AsString;
+            if (!string.IsNullOrEmpty(ssn) && !System.Text.RegularExpressions.Regex.IsMatch(ssn, @"^\d{3}-\d{2}-\d{4}$"))
+            {
+                validationResults.Add("❌ Invalid SSN format");
+            }
+            else if (!string.IsNullOrEmpty(ssn))
+            {
+                validationResults.Add("✅ Valid SSN format");
+            }
+            
+            // Check required personal info
+            var firstName = applicant.GetValue("PersonGivenName", "").AsString;
+            var lastName = applicant.GetValue("PersonSurName", "").AsString;
+            var birthDate = applicant.GetValue("BirthDate", "").AsString;
+            
+            if (string.IsNullOrEmpty(firstName)) validationResults.Add("❌ Missing first name");
+            else validationResults.Add("✅ First name provided");
+            
+            if (string.IsNullOrEmpty(lastName)) validationResults.Add("❌ Missing last name");
+            else validationResults.Add("✅ Last name provided");
+            
+            if (string.IsNullOrEmpty(birthDate)) validationResults.Add("❌ Missing birth date");
+            else validationResults.Add("✅ Birth date provided");
+            
+            // Check for required arrays
+            var addresses = enrollment.GetValue("Addresses", new BsonArray()).AsBsonArray;
+            var employers = enrollment.GetValue("ApplicantEmployers", new BsonArray()).AsBsonArray;
+            
+            if (addresses.Count == 0) validationResults.Add("❌ No addresses provided");
+            else validationResults.Add($"✅ {addresses.Count} address(es) provided");
+            
+            if (employers.Count == 0) validationResults.Add("⚠️ No employment history provided");
+            else validationResults.Add($"✅ {employers.Count} employer(s) provided");
+            
+            return $"Enrollment validation for {applicantId}:\n{string.Join("\n", validationResults)}";
+        }
+        catch (MongoException ex)
+        {
+            return $"MongoDB validation failed: {ex.Message}";
+        }
+        catch (Exception ex)
+        {
+            return $"Validation failed: {ex.Message}";
         }
     }
 
@@ -123,11 +316,11 @@ public class DatabaseTestingTools(ToolService toolService)
             {
                 var metric = await page.EvaluateAsync<object>(@"
                     () => {
-                        const memory = (performance as any).memory;
+                        const memory = performance.memory || {};
                         return {
                             timestamp: new Date().toISOString(),
-                            memoryUsed: memory ? Math.round(memory.usedJSHeapSize / 1024 / 1024) : 'N/A',
-                            memoryLimit: memory ? Math.round(memory.jsHeapSizeLimit / 1024 / 1024) : 'N/A',
+                            memoryUsed: memory.usedJSHeapSize ? Math.round(memory.usedJSHeapSize / 1024 / 1024) : 'N/A',
+                            memoryLimit: memory.jsHeapSizeLimit ? Math.round(memory.jsHeapSizeLimit / 1024 / 1024) : 'N/A',
                             domNodes: document.getElementsByTagName('*').length,
                             localStorageSize: JSON.stringify(localStorage).length
                         };
