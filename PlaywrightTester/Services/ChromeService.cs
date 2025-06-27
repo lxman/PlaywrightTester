@@ -1,7 +1,7 @@
 using Microsoft.Playwright;
 using PlaywrightTester.Models;
 
-namespace PlaywrightTester;
+namespace PlaywrightTester.Services;
 
 public class ChromeService
 {

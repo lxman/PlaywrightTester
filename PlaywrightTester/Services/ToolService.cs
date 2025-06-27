@@ -1,7 +1,8 @@
-using Microsoft.Playwright;
 using System.Text.Json;
+using Microsoft.Playwright;
+using PlaywrightTester.Models;
 
-namespace PlaywrightTester;
+namespace PlaywrightTester.Services;
 
 public class ToolService
 {
@@ -160,13 +161,4 @@ public class ToolService
         _browserContexts.Clear();
         _browsers.Clear();
     }
-}
-
-public class TestStep
-{
-    public string? Action { get; set; }
-    public string? Target { get; set; }
-    public string? Value { get; set; }
-    public string? Validation { get; set; }
-    public string? Message { get; set; }
 }

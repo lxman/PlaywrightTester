@@ -1,6 +1,6 @@
 ﻿using Microsoft.Playwright;
 
-namespace PlaywrightTester;
+namespace PlaywrightTester.Services;
 
 public class WebKitService
 {

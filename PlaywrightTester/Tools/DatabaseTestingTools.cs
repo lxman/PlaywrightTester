@@ -1,10 +1,11 @@
 using System.ComponentModel;
 using System.Text.Json;
 using ModelContextProtocol.Server;
-using MongoDB.Driver;
 using MongoDB.Bson;
+using MongoDB.Driver;
+using PlaywrightTester.Services;
 
-namespace PlaywrightTester;
+namespace PlaywrightTester.Tools;
 
 [McpServerToolType]
 public class DatabaseTestingTools(ToolService toolService)
@@ -76,7 +77,7 @@ public class DatabaseTestingTools(ToolService toolService)
 
     [McpServerTool]
     [Description("Query MongoDB collection for test data")]
-    public async Task<string> QueryMongoCollection(
+    public static async Task<string> QueryMongoCollection(
         [Description("Collection name to query")] string collectionName,
         [Description("MongoDB query filter as JSON")] string filterJson = "{}",
         [Description("Maximum documents to return")] int limit = 10,
@@ -112,7 +113,7 @@ public class DatabaseTestingTools(ToolService toolService)
 
     [McpServerTool]
     [Description("Insert test data into MongoDB collection")]
-    public async Task<string> InsertTestData(
+    public static async Task<string> InsertTestData(
         [Description("Collection name")] string collectionName,
         [Description("Test data as JSON")] string testDataJson,
         [Description("MongoDB connection string")] string connectionString = "mongodb://localhost:27017",
@@ -142,7 +143,7 @@ public class DatabaseTestingTools(ToolService toolService)
 
     [McpServerTool]
     [Description("Cleanup test data from MongoDB collection")]
-    public async Task<string> CleanupTestData(
+    public static async Task<string> CleanupTestData(
         [Description("Collection name")] string collectionName,
         [Description("Filter for documents to delete as JSON")] string filterJson = "{}",
         [Description("MongoDB connection string")] string connectionString = "mongodb://localhost:27017",
@@ -171,7 +172,7 @@ public class DatabaseTestingTools(ToolService toolService)
 
     [McpServerTool]
     [Description("Validate TADERATCS enrollment data in MongoDB")]
-    public async Task<string> ValidateEnrollmentData(
+    public static async Task<string> ValidateEnrollmentData(
         [Description("Applicant identifier")] string applicantId,
         [Description("MongoDB connection string")] string connectionString = "mongodb://localhost:27017",
         [Description("Database name")] string databaseName = "test")

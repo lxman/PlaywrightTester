@@ -2,8 +2,9 @@ using System.ComponentModel;
 using System.Text.Json;
 using Microsoft.Playwright;
 using ModelContextProtocol.Server;
+using PlaywrightTester.Services;
 
-namespace PlaywrightTester;
+namespace PlaywrightTester.Tools;
 
 [McpServerToolType]
 public class TaderatcsTestingTools(ToolService toolService)

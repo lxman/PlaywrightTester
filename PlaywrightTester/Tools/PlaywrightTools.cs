@@ -3,8 +3,9 @@ using System.Text.Json;
 using Microsoft.Playwright;
 using ModelContextProtocol.Server;
 using PlaywrightTester.Models;
+using PlaywrightTester.Services;
 
-namespace PlaywrightTester;
+namespace PlaywrightTester.Tools;
 
 [McpServerToolType]
 public class PlaywrightTools(ToolService toolService, ChromeService chromeService, FirefoxService firefoxService, WebKitService webKitService)

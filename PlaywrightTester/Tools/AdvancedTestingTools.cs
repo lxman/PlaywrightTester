@@ -2,8 +2,9 @@ using System.ComponentModel;
 using System.Text.Json;
 using Microsoft.Playwright;
 using ModelContextProtocol.Server;
+using PlaywrightTester.Services;
 
-namespace PlaywrightTester;
+namespace PlaywrightTester.Tools;
 
 [McpServerToolType]
 public class AdvancedTestingTools(ToolService toolService, ChromeService chromeService)
@@ -287,41 +288,6 @@ public class AdvancedTestingTools(ToolService toolService, ChromeService chromeS
     }
 
     [McpServerTool]
-    [Description("Mock API responses for testing")]
-    public async Task<string> MockApiResponse(
-        [Description("URL pattern to intercept")] string urlPattern,
-        [Description("Mock response status code")] int statusCode,
-        [Description("Mock response body (JSON)")] string responseBody,
-        [Description("Session ID")] string sessionId = "default")
-    {
-        try
-        {
-            var page = toolService.GetPage(sessionId);
-            if (page == null) return $"Session {sessionId} not found.";
-
-            await page.RouteAsync(urlPattern, async route =>
-            {
-                await route.FulfillAsync(new RouteFulfillOptions
-                {
-                    Status = statusCode,
-                    Body = responseBody,
-                    Headers = new Dictionary<string, string>
-                    {
-                        ["Content-Type"] = "application/json",
-                        ["Access-Control-Allow-Origin"] = "*"
-                    }
-                });
-            });
-
-            return $"API mock setup for {urlPattern} - Status: {statusCode}";
-        }
-        catch (Exception ex)
-        {
-            return $"API mocking failed: {ex.Message}";
-        }
-    }
-
-    [McpServerTool]
     [Description("Generate test data for forms")]
     public static async Task<string> GenerateTestData(
         [Description("Data type: person, address, company, ssn, email, phone")] string dataType,
@@ -352,6 +318,77 @@ public class AdvancedTestingTools(ToolService toolService, ChromeService chromeS
         catch (Exception ex)
         {
             return $"Test data generation failed: {ex.Message}";
+        }
+    }
+
+    [McpServerTool]
+    [Description("Execute TADERATCS enrollment form success test")]
+    public async Task<string> ExecuteEnrollmentSuccessTest(
+        [Description("Base URL of enrollment form")] string baseUrl = "http://localhost:4200",
+        [Description("Browser session ID")] string sessionId = "default")
+    {
+        try
+        {
+            var page = toolService.GetPage(sessionId);
+            if (page == null) return $"Session {sessionId} not found.";
+
+            // Navigate to enrollment form
+            await page.GotoAsync(baseUrl);
+            
+            // Fill required personal information
+            await page.Locator("[data-testid='personal-first-name']").FillAsync("John");
+            await page.Locator("[data-testid='personal-last-name']").FillAsync("Smith");
+            await page.Locator("[data-testid='personal-date-of-birth']").FillAsync("1990-01-01");
+            await page.Locator("[data-testid='personal-ssn']").FillAsync("123-45-6789");
+            await page.Locator("[data-testid='personal-sex']").SelectOptionAsync("M");
+            
+            // Move to next section and validate
+            await page.Locator("[data-testid='tab-citizenship']").ClickAsync();
+            await page.Locator("[data-testid='citizenship-us-citizen-yes']").ClickAsync();
+            
+            // Check progress indicators
+            var personalInfoComplete = await page.Locator("[data-testid='progress-personal-info']").IsVisibleAsync();
+            
+            return $"TADERATCS enrollment test completed successfully. Personal info complete: {personalInfoComplete}";
+        }
+        catch (Exception ex)
+        {
+            return $"TADERATCS enrollment test failed: {ex.Message}";
+        }
+    }
+
+    [McpServerTool]
+    [Description("Test localStorage auto-save functionality")]
+    public async Task<string> TestLocalStorageAutoSave(
+        [Description("Browser session ID")] string sessionId = "default")
+    {
+        try
+        {
+            var page = toolService.GetPage(sessionId);
+            if (page == null) return $"Session {sessionId} not found.";
+
+            // Fill some form data
+            await page.Locator("[data-testid='personal-first-name']").FillAsync("TestUser");
+            await page.WaitForTimeoutAsync(1000); // Wait for auto-save
+            
+            // Check localStorage
+            var savedData = await page.EvaluateAsync<string>(@"
+                () => {
+                    return localStorage.getItem('enrollmentFormData') || 'No data saved';
+                }
+            ");
+            
+            // Refresh page and check if data persists
+            await page.ReloadAsync();
+            await page.WaitForTimeoutAsync(2000); // Wait for reload and restore
+            
+            var restoredValue = await page.Locator("[data-testid='personal-first-name']").InputValueAsync();
+            
+            return $"Auto-save test: Saved data: {savedData}, Restored value: {restoredValue}";
+        }
+        catch (Exception ex)
+        {
+            return $"Auto-save test failed: {ex.Message}";
         }
     }
 
@@ -630,76 +667,5 @@ public class AdvancedTestingTools(ToolService toolService, ChromeService chromeS
         
         // Default: use as-is
         return selector;
-    }
-
-    [McpServerTool]
-    [Description("Execute TADERATCS enrollment form success test")]
-    public async Task<string> ExecuteEnrollmentSuccessTest(
-        [Description("Base URL of enrollment form")] string baseUrl = "http://localhost:4200",
-        [Description("Browser session ID")] string sessionId = "default")
-    {
-        try
-        {
-            var page = toolService.GetPage(sessionId);
-            if (page == null) return $"Session {sessionId} not found.";
-
-            // Navigate to enrollment form
-            await page.GotoAsync(baseUrl);
-            
-            // Fill required personal information
-            await page.Locator("[data-testid='personal-first-name']").FillAsync("John");
-            await page.Locator("[data-testid='personal-last-name']").FillAsync("Smith");
-            await page.Locator("[data-testid='personal-date-of-birth']").FillAsync("1990-01-01");
-            await page.Locator("[data-testid='personal-ssn']").FillAsync("123-45-6789");
-            await page.Locator("[data-testid='personal-sex']").SelectOptionAsync("M");
-            
-            // Move to next section and validate
-            await page.Locator("[data-testid='tab-citizenship']").ClickAsync();
-            await page.Locator("[data-testid='citizenship-us-citizen-yes']").ClickAsync();
-            
-            // Check progress indicators
-            var personalInfoComplete = await page.Locator("[data-testid='progress-personal-info']").IsVisibleAsync();
-            
-            return $"TADERATCS enrollment test completed successfully. Personal info complete: {personalInfoComplete}";
-        }
-        catch (Exception ex)
-        {
-            return $"TADERATCS enrollment test failed: {ex.Message}";
-        }
-    }
-
-    [McpServerTool]
-    [Description("Test localStorage auto-save functionality")]
-    public async Task<string> TestLocalStorageAutoSave(
-        [Description("Browser session ID")] string sessionId = "default")
-    {
-        try
-        {
-            var page = toolService.GetPage(sessionId);
-            if (page == null) return $"Session {sessionId} not found.";
-
-            // Fill some form data
-            await page.Locator("[data-testid='personal-first-name']").FillAsync("TestUser");
-            await page.WaitForTimeoutAsync(1000); // Wait for auto-save
-            
-            // Check localStorage
-            var savedData = await page.EvaluateAsync<string>(@"
-                () => {
-                    return localStorage.getItem('enrollmentFormData') || 'No data saved';
-                }
-            ");
-            
-            // Refresh page and check if data persists
-            await page.ReloadAsync();
-            await page.WaitForTimeoutAsync(2000); // Wait for reload and restore
-            
-            var restoredValue = await page.Locator("[data-testid='personal-first-name']").InputValueAsync();
-            
-            return $"Auto-save test: Saved data: {savedData}, Restored value: {restoredValue}";
-        }
-        catch (Exception ex)
-        {
-            return $"Auto-save test failed: {ex.Message}";
-        }
     }
 }

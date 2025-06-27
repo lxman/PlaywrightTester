@@ -7,6 +7,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using PlaywrightTester;
+using PlaywrightTester.Services;
+using PlaywrightTester.Tools;
 
 var builder = Host.CreateApplicationBuilder(args);
 
