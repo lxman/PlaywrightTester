@@ -1,0 +1,36 @@
+﻿// Suppress console output for clean MCP communication
+
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using PlaywrightTester;
+
+Console.SetOut(TextWriter.Null);
+Console.SetError(TextWriter.Null);
+
+var builder = Host.CreateApplicationBuilder(args);
+
+builder.Services
+    .AddSingleton<ToolService>()
+    .AddSingleton<ChromeService>()
+    .AddSingleton<FirefoxService>()
+    .AddSingleton<WebKitService>()
+    .AddSingleton<TADERATCSTestingTools>()
+    .AddSingleton<AdvancedTestingTools>()
+    .AddSingleton<DatabaseTestingTools>()
+    .AddLogging(logging =>
+    {
+        logging.ClearProviders();
+        logging.SetMinimumLevel(LogLevel.Error);
+
+        // Suppress noisy framework logs
+        logging.AddFilter("Microsoft", LogLevel.None);
+        logging.AddFilter("System", LogLevel.None);
+        logging.AddFilter("Microsoft.Playwright", LogLevel.None);
+    })
+    .AddMcpServer()
+    .WithStdioServerTransport()
+    .WithToolsFromAssembly();
+
+var host = builder.Build();
+await host.RunAsync();
