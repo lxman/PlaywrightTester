@@ -17,9 +17,7 @@ var builder = Host.CreateApplicationBuilder(args);
 
 builder.Services
     .AddSingleton<ToolService>()
-    .AddSingleton<ChromeService>()
-    .AddSingleton<FirefoxService>()
-    .AddSingleton<WebKitService>()
+    .AddSingleton<PlaywrightSessionManager>()  // New session manager
     .AddSingleton<PlaywrightTools>()
     .AddSingleton<AdvancedTestingTools>()
     .AddSingleton<DatabaseTestingTools>()
