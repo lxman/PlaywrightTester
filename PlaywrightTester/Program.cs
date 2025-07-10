@@ -10,6 +10,9 @@ using PlaywrightTester;
 using PlaywrightTester.Services;
 using PlaywrightTester.Tools;
 
+Console.SetOut(TextWriter.Null);
+Console.SetError(TextWriter.Null);
+
 var builder = Host.CreateApplicationBuilder(args);
 
 builder.Services
