@@ -54,13 +54,13 @@ public class PlaywrightSessionManager
                 CreatedAt = DateTime.UtcNow
             };
 
-            // Launch browser based on type
+            // Launch browser based on type (simplified options)
             session.Browser = browserType.ToLower() switch
             {
                 "chrome" or "chromium" => await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
                 {
-                    Headless = headless,
-                    Args = ["--disable-web-security", "--disable-features=VizDisplayCompositor", "--allow-running-insecure-content"]
+                    Headless = headless
+                    // Removed Args to prevent potential JSON depth issues
                 }),
                 "firefox" => await _playwright.Firefox.LaunchAsync(new BrowserTypeLaunchOptions
                 {
@@ -151,8 +151,8 @@ public class PlaywrightSessionManager
                 Method = e.Method,
                 Url = e.Url,
                 Timestamp = DateTime.UtcNow,
-                Headers = e.Headers.ToDictionary(kvp => kvp.Key.ToLower(), kvp => kvp.Value),
-                RequestBody = e.PostData ?? "",
+                Headers = e.Headers.Take(10).ToDictionary(kvp => kvp.Key.ToLower(), kvp => kvp.Value?.Length > 200 ? kvp.Value.Substring(0, 200) + "..." : kvp.Value ?? ""),
+                RequestBody = "", // e.PostData ?? "", // DISABLED to prevent JSON depth issues
                 ResourceType = e.ResourceType
             };
             session.NetworkLogs.Add(networkEntry);
@@ -170,20 +170,25 @@ public class PlaywrightSessionManager
 
             try
             {
-                // Capture response headers
-                foreach (var header in e.Headers)
+                // Capture response headers (limited to prevent size issues)
+                foreach (var header in e.Headers.Take(10))
                 {
-                    responseHeaders[header.Key.ToLower()] = header.Value;
+                    if (responseHeaders.Count < 10) // Limit total headers
+                    {
+                        responseHeaders[header.Key.ToLower()] = header.Value?.Length > 200 ? 
+                            header.Value.Substring(0, 200) + "..." : header.Value ?? "";
+                    }
                 }
 
-                // Capture response body for API calls and text responses
+                // Don't capture response body to prevent JSON depth issues
                 if (e.Url.Contains("/api/") ||
                     responseHeaders.GetValueOrDefault("content-type", "").Contains("application/json") ||
                     responseHeaders.GetValueOrDefault("content-type", "").Contains("text/"))
                 {
                     try
                     {
-                        responseBody = await e.TextAsync();
+                        // responseBody = await e.TextAsync(); // DISABLED to prevent JSON depth issues
+                        responseBody = $"[ResponseBody disabled - Content-Type: {responseHeaders.GetValueOrDefault("content-type", "unknown")}]";
                     }
                     catch
                     {
