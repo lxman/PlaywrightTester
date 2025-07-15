@@ -38,6 +38,8 @@ builder.Services
     .AddSingleton<InteractionTestingTools>()
     .AddSingleton<NetworkTestingTools>()
     .AddSingleton<PerformanceTestingTools>()
+    .AddSingleton<AccessibilityTestingTools>()
+    .AddSingleton<BrowserManagementTools>()
     .AddLogging(logging =>
     {
         logging.ClearProviders();
