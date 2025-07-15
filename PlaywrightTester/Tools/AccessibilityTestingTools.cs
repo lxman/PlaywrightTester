@@ -1027,4 +1027,176 @@ public class AccessibilityTestingTools(PlaywrightSessionManager sessionManager)
             }, new JsonSerializerOptions { WriteIndented = true });
         }
     }
+
+    [McpServerTool]
+    [Description("Test screen reader navigation patterns")]
+    public async Task<string> TestScreenReaderNavigation(
+        [Description("Session ID")] string sessionId = "default")
+    {
+        try
+        {
+            var session = sessionManager.GetSession(sessionId);
+            if (session?.Page == null)
+                return $"Session {sessionId} not found or page not available.";
+
+            // Simple screen reader navigation analysis
+            var screenReaderAnalysis = await session.Page.EvaluateAsync<object>(@"
+                (() => {
+                    const analysis = {
+                        landmarks: [],
+                        headings: [],
+                        links: [],
+                        forms: [],
+                        images: [],
+                        navigationAnalysis: {},
+                        recommendations: []
+                    };
+
+                    // Analyze landmarks
+                    const landmarkElements = document.querySelectorAll('header, nav, main, aside, footer, [role=""banner""], [role=""navigation""], [role=""main""], [role=""complementary""], [role=""contentinfo""]');
+                    landmarkElements.forEach((element, index) => {
+                        const role = element.getAttribute('role') || element.tagName.toLowerCase();
+                        const label = element.getAttribute('aria-label') || '';
+                        
+                        analysis.landmarks.push({
+                            index: index + 1,
+                            tagName: element.tagName.toLowerCase(),
+                            role: role,
+                            label: label,
+                            hasLabel: !!label
+                        });
+                    });
+
+                    // Analyze headings
+                    const headings = document.querySelectorAll('h1, h2, h3, h4, h5, h6');
+                    headings.forEach((heading, index) => {
+                        const level = parseInt(heading.tagName.charAt(1));
+                        
+                        analysis.headings.push({
+                            index: index + 1,
+                            tagName: heading.tagName.toLowerCase(),
+                            level: level,
+                            text: heading.textContent.trim(),
+                            hasId: !!heading.id
+                        });
+                    });
+
+                    // Analyze links
+                    const links = document.querySelectorAll('a[href]');
+                    links.forEach((link, index) => {
+                        const href = link.getAttribute('href') || '';
+                        const text = link.textContent.trim();
+                        const ariaLabel = link.getAttribute('aria-label') || '';
+                        
+                        analysis.links.push({
+                            index: index + 1,
+                            href: href,
+                            text: text,
+                            ariaLabel: ariaLabel,
+                            hasDescriptiveText: text.length > 0 && text !== 'click here' && text !== 'read more',
+                            hasAriaLabel: !!ariaLabel
+                        });
+                    });
+
+                    // Analyze form elements
+                    const formElements = document.querySelectorAll('input, select, textarea, button');
+                    formElements.forEach((element, index) => {
+                        const label = document.querySelector('label[for=""' + element.id + '""]');
+                        const ariaLabel = element.getAttribute('aria-label');
+                        
+                        analysis.forms.push({
+                            index: index + 1,
+                            tagName: element.tagName.toLowerCase(),
+                            type: element.type || 'text',
+                            hasLabel: !!label,
+                            hasAriaLabel: !!ariaLabel,
+                            labelText: label ? label.textContent.trim() : (ariaLabel || ''),
+                            required: element.hasAttribute('required')
+                        });
+                    });
+
+                    // Analyze images
+                    const images = document.querySelectorAll('img');
+                    images.forEach((img, index) => {
+                        const alt = img.getAttribute('alt');
+                        
+                        analysis.images.push({
+                            index: index + 1,
+                            src: img.src || '',
+                            alt: alt || '',
+                            hasAlt: alt !== null,
+                            isDecorative: alt === '',
+                            needsDescription: alt === null
+                        });
+                    });
+
+                    // Navigation analysis
+                    analysis.navigationAnalysis = {
+                        landmarkCount: analysis.landmarks.length,
+                        headingLevels: analysis.headings.map(h => h.level),
+                        hasMainLandmark: analysis.landmarks.some(l => l.role === 'main'),
+                        hasNavigationLandmark: analysis.landmarks.some(l => l.role === 'navigation' || l.role === 'nav'),
+                        hasH1: analysis.headings.some(h => h.level === 1),
+                        linkWithoutText: analysis.links.filter(l => !l.hasDescriptiveText).length,
+                        formsWithoutLabels: analysis.forms.filter(f => !f.hasLabel && !f.hasAriaLabel).length,
+                        imagesWithoutAlt: analysis.images.filter(i => i.needsDescription).length
+                    };
+
+                    // Generate basic recommendations
+                    if (!analysis.navigationAnalysis.hasMainLandmark) {
+                        analysis.recommendations.push({
+                            priority: 'HIGH',
+                            category: 'Navigation',
+                            issue: 'Missing main landmark',
+                            solution: 'Add a main element to identify the primary content area'
+                        });
+                    }
+
+                    if (!analysis.navigationAnalysis.hasH1) {
+                        analysis.recommendations.push({
+                            priority: 'HIGH',
+                            category: 'Content Structure',
+                            issue: 'Missing H1 heading',
+                            solution: 'Add an H1 heading to provide the main page title'
+                        });
+                    }
+
+                    if (analysis.navigationAnalysis.linkWithoutText > 0) {
+                        analysis.recommendations.push({
+                            priority: 'HIGH',
+                            category: 'Navigation',
+                            issue: analysis.navigationAnalysis.linkWithoutText + ' links without descriptive text',
+                            solution: 'Provide descriptive link text or aria-label attributes'
+                        });
+                    }
+
+                    return analysis;
+                })()
+            ");
+
+            var result = new
+            {
+                success = true,
+                sessionId = sessionId,
+                timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff"),
+                url = session.Page.Url,
+                screenReaderNavigation = screenReaderAnalysis,
+                summary = new
+                {
+                    note = "Screen reader navigation analysis completed successfully"
+                }
+            };
+
+            return JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (Exception ex)
+        {
+            return JsonSerializer.Serialize(new
+            {
+                success = false,
+                error = ex.Message,
+                capability = "TestScreenReaderNavigation"
+            }, new JsonSerializerOptions { WriteIndented = true });
+        }
+    }
 }

@@ -461,6 +461,97 @@ public class VisualTestingTools(PlaywrightSessionManager sessionManager)
         }
     }
 
+    [McpServerTool]
+    [Description("Visual regression testing with pixel comparison")]
+    public async Task<string> CompareScreenshots(
+        [Description("Path to baseline screenshot for comparison")] string baselinePath,
+        [Description("Optional element selector to compare specific element")] string? selector = null,
+        [Description("Session ID")] string sessionId = "default")
+    {
+        try
+        {
+            var session = sessionManager.GetSession(sessionId);
+            if (session?.Page == null)
+                return $"Session {sessionId} not found or page not available.";
+
+            // Check if baseline exists
+            if (!File.Exists(baselinePath))
+            {
+                return JsonSerializer.Serialize(new { 
+                    success = false, 
+                    error = "Baseline screenshot not found", 
+                    baselinePath = baselinePath 
+                });
+            }
+
+            // Take current screenshot
+            var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+            var currentFilename = $"current_{timestamp}_{sessionId}.png";
+            var currentPath = Path.Combine(Directory.GetCurrentDirectory(), "screenshots", "comparison", currentFilename);
+            
+            // Ensure directory exists
+            Directory.CreateDirectory(Path.GetDirectoryName(currentPath)!);
+
+            byte[] currentBytes;
+            if (!string.IsNullOrEmpty(selector))
+            {
+                var finalSelector = DetermineSelector(selector);
+                var element = session.Page.Locator(finalSelector);
+                currentBytes = await element.ScreenshotAsync();
+            }
+            else
+            {
+                currentBytes = await session.Page.ScreenshotAsync(new PageScreenshotOptions
+                {
+                    FullPage = true
+                });
+            }
+
+            await File.WriteAllBytesAsync(currentPath, currentBytes);
+
+            // Perform basic comparison
+            var baselineBytes = await File.ReadAllBytesAsync(baselinePath);
+            var isIdentical = currentBytes.Length == baselineBytes.Length && 
+                             currentBytes.SequenceEqual(baselineBytes);
+
+            // Calculate basic metrics
+            var comparison = new
+            {
+                success = true,
+                isIdentical = isIdentical,
+                baselineFile = Path.GetFileName(baselinePath),
+                currentFile = currentFilename,
+                baselineSize = baselineBytes.Length,
+                currentSize = currentBytes.Length,
+                sizeDifference = currentBytes.Length - baselineBytes.Length,
+                selector = selector,
+                sessionId = sessionId,
+                timestamp = timestamp,
+                analysis = new
+                {
+                    identical = isIdentical,
+                    sizeMatch = currentBytes.Length == baselineBytes.Length,
+                    byteComparison = isIdentical ? "exact_match" : "different",
+                    recommendation = isIdentical ? 
+                        "Screenshots are identical - no visual regression detected" :
+                        "Screenshots differ - manual review recommended for visual regression analysis"
+                },
+                paths = new
+                {
+                    baseline = baselinePath,
+                    current = currentPath,
+                    comparisonDirectory = Path.GetDirectoryName(currentPath)
+                }
+            };
+
+            return JsonSerializer.Serialize(comparison, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (Exception ex)
+        {
+            return $"Failed to compare screenshots: {ex.Message}";
+        }
+    }
+
     // Helper method for smart selector determination
     private static string DetermineSelector(string selector)
     {

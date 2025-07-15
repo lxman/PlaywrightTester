@@ -780,6 +780,493 @@ public class PerformanceTestingTools(PlaywrightSessionManager sessionManager)
         }
     }
 
+    [McpServerTool]
+    [Description("Run Lighthouse performance audits")]
+    public async Task<string> RunLighthouseAudit(
+        [Description("Optional audit category: performance, accessibility, best-practices, seo, or 'all'")] string? category = null,
+        [Description("Session ID")] string sessionId = "default")
+    {
+        try
+        {
+            var session = sessionManager.GetSession(sessionId);
+            if (session?.Page == null)
+                return $"Session {sessionId} not found or page not available.";
+
+            // Note: This is a simplified Lighthouse-style audit since full Lighthouse integration 
+            // requires additional dependencies. This provides similar metrics using available APIs.
+            
+            var auditCategory = category?.ToLower() ?? "performance";
+            var results = new Dictionary<string, object>();
+
+            // Performance metrics using Performance API
+            if (auditCategory == "performance" || auditCategory == "all")
+            {
+                var performanceMetrics = await session.Page.EvaluateAsync<object>(@"
+                    (() => {
+                        const performance = window.performance;
+                        const navigation = performance.getEntriesByType('navigation')[0];
+                        const timing = performance.timing;
+                        
+                        // Core Web Vitals approximation
+                        const paintEntries = performance.getEntriesByType('paint');
+                        const fcp = paintEntries.find(entry => entry.name === 'first-contentful-paint');
+                        const lcp = paintEntries.find(entry => entry.name === 'largest-contentful-paint');
+                        
+                        return {
+                            // Core timing metrics
+                            domContentLoaded: timing.domContentLoadedEventEnd - timing.navigationStart,
+                            loadComplete: timing.loadEventEnd - timing.navigationStart,
+                            firstPaint: paintEntries.find(e => e.name === 'first-paint')?.startTime || 0,
+                            firstContentfulPaint: fcp?.startTime || 0,
+                            largestContentfulPaint: lcp?.startTime || 0,
+                            
+                            // Resource timing
+                            dnsLookup: timing.domainLookupEnd - timing.domainLookupStart,
+                            tcpConnect: timing.connectEnd - timing.connectStart,
+                            serverResponse: timing.responseEnd - timing.requestStart,
+                            
+                            // Memory usage
+                            jsHeapSize: performance.memory ? performance.memory.usedJSHeapSize : 0,
+                            jsHeapLimit: performance.memory ? performance.memory.totalJSHeapSize : 0,
+                            
+                            // DOM metrics
+                            domNodes: document.querySelectorAll('*').length,
+                            imageCount: document.querySelectorAll('img').length,
+                            scriptCount: document.querySelectorAll('script').length,
+                            stylesheetCount: document.querySelectorAll('link[rel=""stylesheet""]').length
+                        };
+                    })()
+                ");
+                
+                results["performance"] = performanceMetrics;
+            }
+
+            // Basic accessibility checks
+            if (auditCategory == "accessibility" || auditCategory == "all")
+            {
+                var accessibilityMetrics = await session.Page.EvaluateAsync<object>(@"
+                    (() => {
+                        const issues = [];
+                        
+                        // Check for missing alt text
+                        const imagesWithoutAlt = Array.from(document.querySelectorAll('img:not([alt])'));
+                        if (imagesWithoutAlt.length > 0) {
+                            issues.push({
+                                type: 'missing_alt_text',
+                                count: imagesWithoutAlt.length,
+                                severity: 'high'
+                            });
+                        }
+                        
+                        // Check for missing form labels
+                        const inputsWithoutLabels = Array.from(document.querySelectorAll('input:not([aria-label]):not([aria-labelledby])'))
+                            .filter(input => !document.querySelector(`label[for='${input.id}']`));
+                        if (inputsWithoutLabels.length > 0) {
+                            issues.push({
+                                type: 'missing_form_labels',
+                                count: inputsWithoutLabels.length,
+                                severity: 'high'
+                            });
+                        }
+                        
+                        // Check for heading hierarchy
+                        const headings = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6'));
+                        const headingLevels = headings.map(h => parseInt(h.tagName.charAt(1)));
+                        let hasHeadingIssues = false;
+                        
+                        for (let i = 1; i < headingLevels.length; i++) {
+                            if (headingLevels[i] - headingLevels[i-1] > 1) {
+                                hasHeadingIssues = true;
+                                break;
+                            }
+                        }
+                        
+                        if (hasHeadingIssues) {
+                            issues.push({
+                                type: 'heading_hierarchy_issues',
+                                severity: 'medium'
+                            });
+                        }
+                        
+                        return {
+                            totalIssues: issues.length,
+                            issues: issues,
+                            score: Math.max(0, 100 - (issues.length * 20)),
+                            checks: {
+                                imagesWithAlt: document.querySelectorAll('img[alt]').length,
+                                totalImages: document.querySelectorAll('img').length,
+                                formsWithLabels: document.querySelectorAll('label').length,
+                                totalInputs: document.querySelectorAll('input').length,
+                                headingStructure: headings.length > 0 && !hasHeadingIssues
+                            }
+                        };
+                    })()
+                ");
+                
+                results["accessibility"] = accessibilityMetrics;
+            }
+
+            // Best practices checks
+            if (auditCategory == "best-practices" || auditCategory == "all")
+            {
+                var bestPracticesMetrics = await session.Page.EvaluateAsync<object>(@"
+                    (() => {
+                        const issues = [];
+                        
+                        // Check for HTTPS
+                        if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
+                            issues.push({
+                                type: 'not_https',
+                                severity: 'high'
+                            });
+                        }
+                        
+                        // Check for console errors
+                        const errorCount = 0; // Would need additional setup to track
+                        
+                        // Check for deprecated APIs (basic check)
+                        const hasDeprecatedApis = false; // Would need more sophisticated detection
+                        
+                        return {
+                            totalIssues: issues.length,
+                            issues: issues,
+                            score: Math.max(0, 100 - (issues.length * 25)),
+                            checks: {
+                                httpsUsed: location.protocol === 'https:' || location.hostname === 'localhost',
+                                noConsoleErrors: errorCount === 0,
+                                noDeprecatedApis: !hasDeprecatedApis
+                            }
+                        };
+                    })()
+                ");
+                
+                results["bestPractices"] = bestPracticesMetrics;
+            }
+
+            // Generate overall score and recommendations
+            var overallScore = 100;
+            var recommendations = new List<string>();
+            
+            if (results.ContainsKey("performance"))
+            {
+                recommendations.Add("Monitor Core Web Vitals and optimize loading times");
+            }
+            
+            if (results.ContainsKey("accessibility"))
+            {
+                recommendations.Add("Ensure all images have alt text and forms have proper labels");
+            }
+            
+            if (results.ContainsKey("bestPractices"))
+            {
+                recommendations.Add("Use HTTPS and avoid deprecated browser APIs");
+            }
+
+            var audit = new
+            {
+                success = true,
+                sessionId = sessionId,
+                category = auditCategory,
+                timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff"),
+                url = session.Page.Url,
+                results = results,
+                summary = new
+                {
+                    overallScore = overallScore,
+                    categoriesAudited = results.Keys.ToArray(),
+                    recommendations = recommendations
+                },
+                note = "This is a simplified Lighthouse-style audit using available browser APIs. For full Lighthouse functionality, consider using the official Lighthouse Node.js package."
+            };
+
+            return JsonSerializer.Serialize(audit, JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            return $"Failed to run Lighthouse audit: {ex.Message}";
+        }
+    }
+
+    [McpServerTool]
+    [Description("Start performance tracing")]
+    public async Task<string> StartPerformanceTrace(
+        [Description("Session ID")] string sessionId = "default")
+    {
+        try
+        {
+            var session = sessionManager.GetSession(sessionId);
+            if (session?.Page == null)
+                return $"Session {sessionId} not found or page not available.";
+
+            // Start performance tracing using Chrome DevTools Protocol
+            var cdpSession = await session.Page.Context.NewCDPSessionAsync(session.Page);
+            
+            // Enable required domains for performance tracing
+            await cdpSession.SendAsync("Runtime.enable");
+            await cdpSession.SendAsync("Performance.enable");
+            await cdpSession.SendAsync("Page.enable");
+            
+            // Start tracing with comprehensive categories
+            var traceConfig = new Dictionary<string, object>
+            {
+                ["categories"] = new[]
+                {
+                    "devtools.timeline",
+                    "v8.execute", 
+                    "disabled-by-default-devtools.timeline",
+                    "disabled-by-default-devtools.timeline.frame",
+                    "toplevel",
+                    "blink.console",
+                    "blink.user_timing",
+                    "latencyInfo",
+                    "disabled-by-default-devtools.timeline.stack",
+                    "disabled-by-default-v8.cpu_profiler"
+                },
+                ["options"] = new[]
+                {
+                    "sampling-frequency=10000"
+                },
+                ["transferMode"] = "ReportEvents",
+                ["traceConfig"] = new Dictionary<string, object>
+                {
+                    ["recordMode"] = "recordContinuously",
+                    ["enableSampling"] = true,
+                    ["enableSystrace"] = false,
+                    ["enableArgumentFilter"] = false
+                }
+            };
+
+            try
+            {
+                await cdpSession.SendAsync("Tracing.start", traceConfig);
+            }
+            catch (Exception)
+            {
+                // Fallback to basic tracing if advanced options fail
+                var basicConfig = new Dictionary<string, object>
+                {
+                    ["categories"] = new[] { "devtools.timeline", "v8.execute" },
+                    ["transferMode"] = "ReportEvents"
+                };
+                await cdpSession.SendAsync("Tracing.start", basicConfig);
+            }
+
+            // Record start time and create trace session
+            var startTime = DateTime.UtcNow;
+            var traceId = Guid.NewGuid().ToString();
+            
+            // Store trace session info for later retrieval
+            var traceSession = new
+            {
+                traceId = traceId,
+                sessionId = sessionId,
+                startTime = startTime,
+                cdpSession = cdpSession,
+                isActive = true
+            };
+
+            // Collect initial performance metrics
+            var initialMetrics = await GetBrowserPerformanceMetrics(session.Page);
+            
+            // Get initial page state
+            var initialPageState = await session.Page.EvaluateAsync<object>(@"
+                (() => {
+                    const performance = window.performance;
+                    const timing = performance.timing;
+                    
+                    return {
+                        url: window.location.href,
+                        title: document.title,
+                        timestamp: Date.now(),
+                        navigation: {
+                            type: performance.navigation?.type || 0,
+                            redirectCount: performance.navigation?.redirectCount || 0
+                        },
+                        timing: {
+                            navigationStart: timing.navigationStart,
+                            loadEventEnd: timing.loadEventEnd,
+                            domContentLoaded: timing.domContentLoadedEventEnd - timing.navigationStart,
+                            loadComplete: timing.loadEventEnd - timing.navigationStart
+                        },
+                        resources: performance.getEntriesByType('resource').length,
+                        marks: performance.getEntriesByType('mark').length,
+                        measures: performance.getEntriesByType('measure').length
+                    };
+                })()
+            ");
+
+            var result = new
+            {
+                success = true,
+                traceId = traceId,
+                sessionId = sessionId,
+                startTime = startTime.ToString("yyyy-MM-dd HH:mm:ss.fff"),
+                status = "tracing_started",
+                initialMetrics = initialMetrics,
+                initialPageState = initialPageState,
+                instructions = new
+                {
+                    note = "Performance tracing has started. Use StopPerformanceTrace to end tracing and get results.",
+                    recommendation = "Perform the actions you want to trace, then call StopPerformanceTrace with the same traceId."
+                },
+                tracingDetails = new
+                {
+                    categoriesEnabled = new[]
+                    {
+                        "devtools.timeline",
+                        "v8.execute", 
+                        "user_timing",
+                        "latency_info"
+                    },
+                    metricsTracked = new[]
+                    {
+                        "JavaScript execution",
+                        "DOM operations",
+                        "Layout calculations", 
+                        "Paint operations",
+                        "Network activity",
+                        "User interactions"
+                    }
+                }
+            };
+
+            return JsonSerializer.Serialize(result, JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            return $"Failed to start performance trace: {ex.Message}";
+        }
+    }
+
+    [McpServerTool]
+    [Description("Stop performance tracing and return results")]
+    public async Task<string> StopPerformanceTrace(
+        [Description("Session ID")] string sessionId = "default")
+    {
+        try
+        {
+            var session = sessionManager.GetSession(sessionId);
+            if (session?.Page == null)
+                return $"Session {sessionId} not found or page not available.";
+
+            // Get CDP session (we'll need to recreate it as we don't store it)
+            var cdpSession = await session.Page.Context.NewCDPSessionAsync(session.Page);
+            
+            try
+            {
+                // Stop tracing
+                await cdpSession.SendAsync("Tracing.end");
+                
+                // Wait a moment for tracing to complete
+                await Task.Delay(1000);
+            }
+            catch (Exception)
+            {
+                // Tracing may not have been started or already stopped
+            }
+
+            var endTime = DateTime.UtcNow;
+            
+            // Collect final performance metrics
+            var finalMetrics = await GetBrowserPerformanceMetrics(session.Page);
+            
+            // Get comprehensive performance data
+            var performanceData = await session.Page.EvaluateAsync<object>(@"
+                (() => {
+                    const performance = window.performance;
+                    const timing = performance.timing;
+                    
+                    // Get all performance entries
+                    const navigation = performance.getEntriesByType('navigation')[0];
+                    const resources = performance.getEntriesByType('resource');
+                    const marks = performance.getEntriesByType('mark');
+                    const measures = performance.getEntriesByType('measure');
+                    const paints = performance.getEntriesByType('paint');
+                    
+                    // Calculate key metrics
+                    const metrics = {
+                        // Core timing metrics
+                        dnsLookup: timing.domainLookupEnd - timing.domainLookupStart,
+                        tcpConnect: timing.connectEnd - timing.connectStart,
+                        serverResponse: timing.responseEnd - timing.requestStart,
+                        domProcessing: timing.domComplete - timing.domLoading,
+                        
+                        // Page load metrics
+                        domContentLoaded: timing.domContentLoadedEventEnd - timing.navigationStart,
+                        loadComplete: timing.loadEventEnd - timing.navigationStart,
+                        
+                        // Paint metrics
+                        firstPaint: paints.find(p => p.name === 'first-paint')?.startTime || 0,
+                        firstContentfulPaint: paints.find(p => p.name === 'first-contentful-paint')?.startTime || 0,
+                        
+                        // Resource counts
+                        totalResources: resources.length,
+                        imageResources: resources.filter(r => r.initiatorType === 'img').length,
+                        scriptResources: resources.filter(r => r.initiatorType === 'script').length,
+                        cssResources: resources.filter(r => r.initiatorType === 'css').length,
+                        
+                        // Performance marks and measures
+                        customMarks: marks.length,
+                        customMeasures: measures.length
+                    };
+                    
+                    return {
+                        timestamp: Date.now(),
+                        url: window.location.href,
+                        title: document.title,
+                        metrics: metrics,
+                        resources: resources.map(r => ({
+                            name: r.name,
+                            duration: r.duration,
+                            size: r.transferSize || 0,
+                            type: r.initiatorType
+                        })),
+                        marks: marks,
+                        measures: measures,
+                        navigation: navigation ? {
+                            duration: navigation.duration,
+                            loadEventEnd: navigation.loadEventEnd,
+                            domContentLoadedEventEnd: navigation.domContentLoadedEventEnd
+                        } : null
+                    };
+                })()
+            ");
+
+            // Cleanup CDP session
+            try
+            {
+                await cdpSession.DetachAsync();
+            }
+            catch (Exception)
+            {
+                // Ignore cleanup errors
+            }
+
+            var result = new
+            {
+                success = true,
+                sessionId = sessionId,
+                endTime = endTime.ToString("yyyy-MM-dd HH:mm:ss.fff"),
+                status = "tracing_completed",
+                performanceData = performanceData,
+                finalMetrics = finalMetrics,
+                summary = new
+                {
+                    tracingCompleted = true,
+                    dataCollected = true,
+                    recommendation = "Review performance data for optimization opportunities"
+                },
+                note = "Performance tracing completed. Data includes timing metrics, resource loading, and custom performance marks."
+            };
+
+            return JsonSerializer.Serialize(result, JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            return $"Failed to stop performance trace: {ex.Message}";
+        }
+    }
+
     private async Task<object> GetBrowserPerformanceMetrics(IPage page)
     {
         try

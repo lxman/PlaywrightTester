@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Playwright;
 using ModelContextProtocol.Server;
 using PlaywrightTester.Services;
@@ -653,6 +654,169 @@ public class NetworkTestingTools(PlaywrightSessionManager sessionManager)
         catch (Exception ex)
         {
             return $"Failed to list intercept rules: {ex.Message}";
+        }
+    }
+
+    [McpServerTool]
+    [Description("Generate HAR file for network analysis")]
+    public async Task<string> GenerateHarFile(
+        [Description("Output path for HAR file")] string outputPath,
+        [Description("Session ID")] string sessionId = "default")
+    {
+        try
+        {
+            var session = sessionManager.GetSession(sessionId);
+            if (session?.Page == null)
+                return $"Session {sessionId} not found or page not available.";
+
+            // Ensure output directory exists
+            var directory = Path.GetDirectoryName(outputPath);
+            if (!string.IsNullOrEmpty(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            // Generate timestamp if not provided in filename
+            if (!Path.HasExtension(outputPath))
+            {
+                outputPath = Path.Combine(outputPath, $"network_trace_{DateTime.Now:yyyyMMdd_HHmmss}.har");
+            }
+            else if (Path.GetExtension(outputPath) != ".har")
+            {
+                outputPath = Path.ChangeExtension(outputPath, ".har");
+            }
+
+            // Start tracing network activity (we'll create a simplified HAR-like format)
+            var networkEvents = new List<object>();
+            var startTime = DateTime.UtcNow;
+
+            // Enable request/response interception to capture network data
+            await session.Page.RouteAsync("**/*", async route =>
+            {
+                var request = route.Request;
+                var requestTime = DateTime.UtcNow;
+                
+                try
+                {
+                    // Continue with the request
+                    await route.ContinueAsync();
+                }
+                catch (Exception)
+                {
+                    // If continuing fails, fulfill with error
+                    await route.FulfillAsync(new RouteFulfillOptions
+                    {
+                        Status = 500,
+                        Body = "Network capture error"
+                    });
+                }
+            });
+
+            // Get current network activity using CDP (Chrome DevTools Protocol)
+            var cdpSession = await session.Page.Context.NewCDPSessionAsync(session.Page);
+            
+            // Enable Network domain
+            await cdpSession.SendAsync("Network.enable");
+            
+            // Collect network events for a short period to demonstrate
+            await Task.Delay(2000); // Wait 2 seconds to capture some network activity
+            
+            // Get network activity using JavaScript evaluation
+            var networkData = await session.Page.EvaluateAsync<object>(@"
+                (() => {
+                    const perfEntries = performance.getEntriesByType('navigation')
+                        .concat(performance.getEntriesByType('resource'));
+                    
+                    return perfEntries.map(entry => ({
+                        name: entry.name,
+                        startTime: entry.startTime,
+                        duration: entry.duration,
+                        transferSize: entry.transferSize || 0,
+                        encodedBodySize: entry.encodedBodySize || 0,
+                        decodedBodySize: entry.decodedBodySize || 0,
+                        initiatorType: entry.initiatorType || 'unknown',
+                        nextHopProtocol: entry.nextHopProtocol || 'unknown',
+                        responseStart: entry.responseStart || 0,
+                        responseEnd: entry.responseEnd || 0,
+                        domainLookupStart: entry.domainLookupStart || 0,
+                        domainLookupEnd: entry.domainLookupEnd || 0,
+                        connectStart: entry.connectStart || 0,
+                        connectEnd: entry.connectEnd || 0,
+                        secureConnectionStart: entry.secureConnectionStart || 0,
+                        requestStart: entry.requestStart || 0
+                    }));
+                })()
+            ");
+
+            // Create HAR-like structure
+            var harData = new
+            {
+                log = new
+                {
+                    version = "1.2",
+                    creator = new
+                    {
+                        name = "PlaywrightTester",
+                        version = "1.0.0"
+                    },
+                    browser = new
+                    {
+                        name = "Playwright",
+                        version = "1.53.0"
+                    },
+                    pages = new[]
+                    {
+                        new
+                        {
+                            startedDateTime = startTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
+                            id = $"page_{sessionId}",
+                            title = await session.Page.TitleAsync(),
+                            pageTimings = new
+                            {
+                                onContentLoad = -1,
+                                onLoad = -1
+                            }
+                        }
+                    },
+                    entries = networkData,
+                    comment = "Generated by PlaywrightTester NetworkTestingTools"
+                }
+            };
+
+            // Write HAR file
+            var harJson = JsonSerializer.Serialize(harData, new JsonSerializerOptions 
+            { 
+                WriteIndented = true,
+                DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+            });
+            
+            await File.WriteAllTextAsync(outputPath, harJson);
+
+            // Disable network tracking
+            await cdpSession.SendAsync("Network.disable");
+            await cdpSession.DetachAsync();
+
+            // Remove route handler
+            await session.Page.UnrouteAsync("**/*");
+
+            var result = new
+            {
+                success = true,
+                sessionId = sessionId,
+                outputPath = outputPath,
+                filename = Path.GetFileName(outputPath),
+                fileSize = new FileInfo(outputPath).Length,
+                timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff"),
+                pageUrl = session.Page.Url,
+                entriesCount = networkData is System.Text.Json.JsonElement element ? element.GetArrayLength() : 0,
+                note = "HAR file generated with network performance data. For full HAR functionality with request/response bodies, consider using dedicated HAR recording tools."
+            };
+
+            return JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (Exception ex)
+        {
+            return $"Failed to generate HAR file: {ex.Message}";
         }
     }
 
