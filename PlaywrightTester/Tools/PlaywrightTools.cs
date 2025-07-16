@@ -15,9 +15,10 @@ public class PlaywrightTools(ToolService toolService, PlaywrightSessionManager s
     public async Task<string> LaunchBrowser(
         [Description("Browser type: chrome, firefox, webkit")] string browserType = "chrome",
         [Description("Run in headless mode")] bool headless = true,
-        [Description("Session ID for this browser instance")] string sessionId = "default")
+        [Description("Session ID for this browser instance")] string sessionId = "default",
+        [Description("User data directory for persistent storage (optional)")] string? userDataDir = null)
     {
-        var result = await sessionManager.CreateSessionAsync(sessionId, browserType, headless);
+        var result = await sessionManager.CreateSessionAsync(sessionId, browserType, headless, userDataDir);
         
         // Also store in ToolService for backward compatibility
         var session = sessionManager.GetSession(sessionId);
@@ -934,6 +935,161 @@ public class PlaywrightTools(ToolService toolService, PlaywrightSessionManager s
         catch (Exception ex)
         {
             return $"Failed to analyze layout: {ex.Message}";
+        }
+    }
+
+    [McpServerTool]
+    [Description("Save localStorage state for persistence")]
+    public async Task<string> SaveLocalStorageState(
+        [Description("Session ID")] string sessionId = "default")
+    {
+        try
+        {
+            var session = sessionManager.GetSession(sessionId);
+            if (session?.Page == null)
+                return $"Session {sessionId} not found or page not available.";
+
+            var localStorageData = await session.Page.EvaluateAsync<object>(@"
+                () => {
+                    const storage = {};
+                    for (let i = 0; i < localStorage.length; i++) {
+                        const key = localStorage.key(i);
+                        if (key) {
+                            storage[key] = localStorage.getItem(key);
+                        }
+                    }
+                    return storage;
+                }
+            ");
+
+            var result = new
+            {
+                success = true,
+                sessionId = sessionId,
+                localStorage = localStorageData,
+                timestamp = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss"),
+                message = "localStorage state saved successfully"
+            };
+
+            return JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (Exception ex)
+        {
+            return JsonSerializer.Serialize(new
+            {
+                success = false,
+                error = ex.Message,
+                capability = "SaveLocalStorageState"
+            }, new JsonSerializerOptions { WriteIndented = true });
+        }
+    }
+
+    [McpServerTool]
+    [Description("Restore localStorage state from saved data")]
+    public async Task<string> RestoreLocalStorageState(
+        [Description("localStorage data as JSON string")] string localStorageJson,
+        [Description("Session ID")] string sessionId = "default")
+    {
+        try
+        {
+            var session = sessionManager.GetSession(sessionId);
+            if (session?.Page == null)
+                return $"Session {sessionId} not found or page not available.";
+
+            var jsCode = $@"
+                (() => {{
+                    try {{
+                        const storageData = {localStorageJson};
+                        let restoredCount = 0;
+                        
+                        for (const [key, value] of Object.entries(storageData)) {{
+                            localStorage.setItem(key, value);
+                            restoredCount++;
+                        }}
+                        
+                        return {{
+                            success: true,
+                            restoredCount: restoredCount,
+                            currentItems: localStorage.length
+                        }};
+                    }} catch (error) {{
+                        return {{
+                            success: false,
+                            error: error.message
+                        }};
+                    }}
+                }})()
+            ";
+
+            var result = await session.Page.EvaluateAsync<object>(jsCode);
+            return JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (Exception ex)
+        {
+            return JsonSerializer.Serialize(new
+            {
+                success = false,
+                error = ex.Message,
+                capability = "RestoreLocalStorageState"
+            }, new JsonSerializerOptions { WriteIndented = true });
+        }
+    }
+
+    [McpServerTool]
+    [Description("Test localStorage auto-save functionality")]
+    public async Task<string> TestLocalStorageAutoSave(
+        [Description("Browser session ID")] string sessionId = "default")
+    {
+        try
+        {
+            var session = sessionManager.GetSession(sessionId);
+            if (session?.Page == null)
+                return $"Session {sessionId} not found or page not available.";
+
+            var jsCode = @"
+                (() => {
+                    // Test localStorage functionality
+                    const testKey = 'playwright_test_' + Date.now();
+                    const testValue = 'test_value_' + Math.random();
+                    
+                    try {
+                        // Set test value
+                        localStorage.setItem(testKey, testValue);
+                        
+                        // Retrieve and verify
+                        const retrieved = localStorage.getItem(testKey);
+                        const success = retrieved === testValue;
+                        
+                        // Clean up
+                        localStorage.removeItem(testKey);
+                        
+                        return {
+                            success: success,
+                            testPerformed: true,
+                            totalItems: localStorage.length,
+                            message: success ? 'localStorage is working correctly' : 'localStorage test failed'
+                        };
+                    } catch (error) {
+                        return {
+                            success: false,
+                            testPerformed: false,
+                            error: error.message
+                        };
+                    }
+                })()
+            ";
+
+            var result = await session.Page.EvaluateAsync<object>(jsCode);
+            return JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (Exception ex)
+        {
+            return JsonSerializer.Serialize(new
+            {
+                success = false,
+                error = ex.Message,
+                capability = "TestLocalStorageAutoSave"
+            }, new JsonSerializerOptions { WriteIndented = true });
         }
     }
 

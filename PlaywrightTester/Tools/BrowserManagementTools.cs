@@ -404,6 +404,56 @@ public class BrowserManagementTools(PlaywrightSessionManager sessionManager)
         return tabList.ToArray();
     }
 
+    [McpServerTool]
+    [Description("Launch browser with persistent localStorage support")]
+    public async Task<string> LaunchBrowserWithPersistentStorage(
+        [Description("Browser type: chrome, firefox, webkit")] string browserType = "chrome",
+        [Description("Run in headless mode")] bool headless = true,
+        [Description("Session ID for this browser instance")] string sessionId = "default",
+        [Description("User data directory path (will be created if it doesn't exist)")] string? userDataDir = null)
+    {
+        try
+        {
+            // If no userDataDir provided, create a default one
+            if (string.IsNullOrEmpty(userDataDir))
+            {
+                var tempDir = Path.GetTempPath();
+                userDataDir = Path.Combine(tempDir, "playwright-sessions", sessionId);
+            }
+
+            // Launch browser with persistent storage
+            var result = await sessionManager.CreateSessionAsync(sessionId, browserType, headless, userDataDir);
+            
+            var response = new
+            {
+                success = true,
+                message = result,
+                sessionId = sessionId,
+                browserType = browserType,
+                headless = headless,
+                userDataDir = userDataDir,
+                persistentStorage = true,
+                recommendations = new[]
+                {
+                    "localStorage, sessionStorage, and cookies will persist between sessions",
+                    "Use the same sessionId and userDataDir to restore previous state",
+                    "Consider backing up the userDataDir for important test data"
+                }
+            };
+
+            return JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (Exception ex)
+        {
+            return JsonSerializer.Serialize(new
+            {
+                success = false,
+                error = ex.Message,
+                capability = "LaunchBrowserWithPersistentStorage"
+            }, new JsonSerializerOptions { WriteIndented = true });
+        }
+    }
+
     private static object[] GenerateStorageRecommendations(List<object> clearResults, List<string> errors, string type)
     {
         var recommendations = new List<object>();

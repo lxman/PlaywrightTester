@@ -34,7 +34,7 @@ public class PlaywrightSessionManager
         }
     }
 
-    public async Task<string> CreateSessionAsync(string sessionId, string browserType = "chrome", bool headless = true)
+    public async Task<string> CreateSessionAsync(string sessionId, string browserType = "chrome", bool headless = true, string? userDataDir = null)
     {
         try
         {
@@ -54,30 +54,52 @@ public class PlaywrightSessionManager
                 CreatedAt = DateTime.UtcNow
             };
 
-            // Launch browser based on type (simplified options)
-            session.Browser = browserType.ToLower() switch
+            // Launch browser based on type with optional userDataDir
+            if (!string.IsNullOrEmpty(userDataDir))
             {
-                "chrome" or "chromium" => await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+                // Ensure the directory exists
+                EnsureUserDataDirectoryExists(userDataDir);
+                
+                // Use LaunchPersistentContextAsync for persistent storage
+                var persistentOptions = new BrowserTypeLaunchPersistentContextOptions
                 {
-                    Headless = headless
-                    // Removed Args to prevent potential JSON depth issues
-                }),
-                "firefox" => await _playwright.Firefox.LaunchAsync(new BrowserTypeLaunchOptions
-                {
-                    Headless = headless
-                }),
-                "webkit" => await _playwright.Webkit.LaunchAsync(new BrowserTypeLaunchOptions
-                {
-                    Headless = headless
-                }),
-                _ => throw new ArgumentException($"Unsupported browser type: {browserType}")
-            };
+                    Headless = headless,
+                    ViewportSize = new ViewportSize { Width = 1920, Height = 1080 }
+                };
 
-            // Create browser context
-            session.Context = await session.Browser.NewContextAsync(new BrowserNewContextOptions
+                session.Context = browserType.ToLower() switch
+                {
+                    "chrome" or "chromium" => await _playwright.Chromium.LaunchPersistentContextAsync(userDataDir, persistentOptions),
+                    "firefox" => await _playwright.Firefox.LaunchPersistentContextAsync(userDataDir, persistentOptions),
+                    "webkit" => await _playwright.Webkit.LaunchPersistentContextAsync(userDataDir, persistentOptions),
+                    _ => throw new ArgumentException($"Unsupported browser type: {browserType}")
+                };
+                
+                // For persistent context, the browser is accessible via context.Browser
+                session.Browser = session.Context.Browser;
+            }
+            else
             {
-                ViewportSize = new ViewportSize { Width = 1920, Height = 1080 }
-            });
+                // Use regular launch for non-persistent sessions
+                var launchOptions = new BrowserTypeLaunchOptions
+                {
+                    Headless = headless
+                };
+
+                session.Browser = browserType.ToLower() switch
+                {
+                    "chrome" or "chromium" => await _playwright.Chromium.LaunchAsync(launchOptions),
+                    "firefox" => await _playwright.Firefox.LaunchAsync(launchOptions),
+                    "webkit" => await _playwright.Webkit.LaunchAsync(launchOptions),
+                    _ => throw new ArgumentException($"Unsupported browser type: {browserType}")
+                };
+                
+                // Create browser context for regular sessions
+                session.Context = await session.Browser.NewContextAsync(new BrowserNewContextOptions
+                {
+                    ViewportSize = new ViewportSize { Width = 1920, Height = 1080 }
+                });
+            }
 
             // Create page
             session.Page = await session.Context.NewPageAsync();
@@ -106,7 +128,8 @@ public class PlaywrightSessionManager
                 Timestamp = DateTime.UtcNow
             });
 
-            return $"Session {sessionId} created successfully with {browserType} browser. " +
+            var persistenceInfo = !string.IsNullOrEmpty(userDataDir) ? $" with persistent storage at {userDataDir}" : "";
+            return $"Session {sessionId} created successfully with {browserType} browser{persistenceInfo}. " +
                    $"Session is active: {session.IsActive}. " +
                    $"Total active sessions: {_sessions.Count}";
         }
@@ -290,6 +313,21 @@ public class PlaywrightSessionManager
         {
             _playwright.Dispose();
             _playwright = null;
+        }
+    }
+
+    private static void EnsureUserDataDirectoryExists(string userDataDir)
+    {
+        try
+        {
+            if (!Directory.Exists(userDataDir))
+            {
+                Directory.CreateDirectory(userDataDir);
+            }
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"Failed to create user data directory '{userDataDir}': {ex.Message}", ex);
         }
     }
 
